@@ -1,0 +1,435 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1780617716258,
+  "projectRoot": "/Users/eliasdayan/Documents/overcloud/mic",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      },
+      {
+        "name": "Rust",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Cargo.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "svelte",
+        "version": "5",
+        "category": "frontend"
+      },
+      {
+        "name": "vite",
+        "version": "6",
+        "category": "build"
+      }
+    ],
+    "packageManager": "cargo",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "cargo test",
+    "lintCommand": "cargo clippy",
+    "devCommand": "npm run dev",
+    "scripts": {
+      "dev": "vite",
+      "build": "vite build",
+      "preview": "vite preview",
+      "check": "svelte-check --tsconfig ./tsconfig.json",
+      "tauri": "tauri"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "src"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "crates": {
+      "path": "crates",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1780617716243,
+      "keyFiles": []
+    },
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 1,
+      "lastAccessed": 1780617716243,
+      "keyFiles": [
+        "index.html"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 3,
+      "lastAccessed": 1780617716246,
+      "keyFiles": [
+        "App.svelte",
+        "app.css",
+        "main.ts"
+      ]
+    },
+    "target": {
+      "path": "target",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1780617716247,
+      "keyFiles": [
+        "CACHEDIR.TAG"
+      ]
+    },
+    "dist/assets": {
+      "path": "dist/assets",
+      "purpose": "Static assets",
+      "fileCount": 2,
+      "lastAccessed": 1780617716248,
+      "keyFiles": [
+        "index-CXyS6EIL.js",
+        "index-D5HkIAUN.css"
+      ]
+    },
+    "src/lib": {
+      "path": "src/lib",
+      "purpose": "Library code",
+      "fileCount": 1,
+      "lastAccessed": 1780617716248,
+      "keyFiles": [
+        "acciones.ts"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/lib/components/album/AlbumView.svelte",
+      "accessCount": 55,
+      "lastAccessed": 1780853124458,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/grid/ThumbnailGrid.svelte",
+      "accessCount": 55,
+      "lastAccessed": 1780853536177,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/acciones.ts",
+      "accessCount": 44,
+      "lastAccessed": 1780852658405,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/i18n/es.ts",
+      "accessCount": 44,
+      "lastAccessed": 1780852763623,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/ipc/mock/index.ts",
+      "accessCount": 43,
+      "lastAccessed": 1780853459865,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/editor/RecordEditor.svelte",
+      "accessCount": 30,
+      "lastAccessed": 1780853901636,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/shell/MenuBar.svelte",
+      "accessCount": 27,
+      "lastAccessed": 1780852664287,
+      "type": "file"
+    },
+    {
+      "path": "CONTRACT.md",
+      "accessCount": 23,
+      "lastAccessed": 1780852372177,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-db/src/repo_registros.rs",
+      "accessCount": 22,
+      "lastAccessed": 1780690910560,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/stores/albumState.svelte.ts",
+      "accessCount": 21,
+      "lastAccessed": 1780852682466,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-tauri/src/lib.rs",
+      "accessCount": 20,
+      "lastAccessed": 1780689351704,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/ipc/commands.ts",
+      "accessCount": 18,
+      "lastAccessed": 1780681198257,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-core/src/model.rs",
+      "accessCount": 15,
+      "lastAccessed": 1780689480707,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-tauri/src/commands/mod.rs",
+      "accessCount": 14,
+      "lastAccessed": 1780689351652,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-tauri/Cargo.toml",
+      "accessCount": 13,
+      "lastAccessed": 1780689351755,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/domain/types.ts",
+      "accessCount": 12,
+      "lastAccessed": 1780681194554,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/ipc/mock/datos.ts",
+      "accessCount": 11,
+      "lastAccessed": 1780689802575,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/ui/Modal.svelte",
+      "accessCount": 10,
+      "lastAccessed": 1780691228166,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/structure/FormulaEditor.svelte",
+      "accessCount": 9,
+      "lastAccessed": 1780851715289,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-tauri/src/commands/album.rs",
+      "accessCount": 7,
+      "lastAccessed": 1780622714640,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/stores/vista.svelte.ts",
+      "accessCount": 7,
+      "lastAccessed": 1780852647922,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/ipc/thumbnails.ts",
+      "accessCount": 7,
+      "lastAccessed": 1780852712083,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-tauri/src/commands/registros.rs",
+      "accessCount": 6,
+      "lastAccessed": 1780681172534,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/dialogs/TotalizeDialog.svelte",
+      "accessCount": 6,
+      "lastAccessed": 1780681349341,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-db/src/lib.rs",
+      "accessCount": 6,
+      "lastAccessed": 1780688141085,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-tauri/src/state.rs",
+      "accessCount": 6,
+      "lastAccessed": 1780690951447,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/album/FiltersPanel.svelte",
+      "accessCount": 6,
+      "lastAccessed": 1780852699711,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/dialogs/SortDialog.svelte",
+      "accessCount": 5,
+      "lastAccessed": 1780623191148,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/dialogs/BatchUpdateDialog.svelte",
+      "accessCount": 5,
+      "lastAccessed": 1780680203610,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-db/src/schema.rs",
+      "accessCount": 5,
+      "lastAccessed": 1780680480977,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/ui/index.ts",
+      "accessCount": 5,
+      "lastAccessed": 1780688211000,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/ui/Select.svelte",
+      "accessCount": 5,
+      "lastAccessed": 1780688211051,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/dialogs/CopyAlbumDialog.svelte",
+      "accessCount": 5,
+      "lastAccessed": 1780851623813,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/dialogs/AdvancedFiltersDialog.svelte",
+      "accessCount": 5,
+      "lastAccessed": 1780852692666,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/ipc/mock/motor.ts",
+      "accessCount": 4,
+      "lastAccessed": 1780620082952,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/utils/format.ts",
+      "accessCount": 4,
+      "lastAccessed": 1780680707692,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/stores/ui.svelte.ts",
+      "accessCount": 4,
+      "lastAccessed": 1780681151403,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 4,
+      "lastAccessed": 1780688141033,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/ipc/events.ts",
+      "accessCount": 4,
+      "lastAccessed": 1780688227852,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/viewer/ImageViewer.svelte",
+      "accessCount": 4,
+      "lastAccessed": 1780691242093,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/album/InspectorPanel.svelte",
+      "accessCount": 3,
+      "lastAccessed": 1780620195042,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/shell/StatusBar.svelte",
+      "accessCount": 3,
+      "lastAccessed": 1780620252244,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/grid/TableView.svelte",
+      "accessCount": 3,
+      "lastAccessed": 1780625265378,
+      "type": "file"
+    },
+    {
+      "path": "src/main.ts",
+      "accessCount": 2,
+      "lastAccessed": 1780618262263,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-db/src/repo_filtros.rs",
+      "accessCount": 2,
+      "lastAccessed": 1780619692358,
+      "type": "file"
+    },
+    {
+      "path": "src/lib/components/ui/TextInput.svelte",
+      "accessCount": 2,
+      "lastAccessed": 1780621949792,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-db/src/repo_multidatos.rs",
+      "accessCount": 2,
+      "lastAccessed": 1780688145885,
+      "type": "file"
+    },
+    {
+      "path": "src/App.svelte",
+      "accessCount": 2,
+      "lastAccessed": 1780691270578,
+      "type": "file"
+    },
+    {
+      "path": "package.json",
+      "accessCount": 1,
+      "lastAccessed": 1780617825101,
+      "type": "file"
+    },
+    {
+      "path": "crates/mic-tauri/src/commands/filtros.rs",
+      "accessCount": 1,
+      "lastAccessed": 1780619660185,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

@@ -1,0 +1,17 @@
+[package]
+name = "mic-thumbs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mic-core = { path = "../mic-core" }
+thiserror = { workspace = true }
+image = { workspace = true }
+# La feature "image" habilita la integración con el crate `image`
+# (DynamicImage implementa IntoImageView), que no está en las features por defecto.
+fast_image_resize = { workspace = true, features = ["image"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

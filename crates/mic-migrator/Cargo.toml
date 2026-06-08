@@ -1,0 +1,20 @@
+[package]
+name = "mic-migrator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mic-core = { path = "../mic-core" }
+mic-db = { path = "../mic-db" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { workspace = true }
+encoding_rs = { workspace = true }
+csv = { workspace = true }
+tracing = { workspace = true }
+quick-xml = "0.36"
+
+[dev-dependencies]
+tempfile = "3"

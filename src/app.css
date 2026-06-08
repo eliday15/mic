@@ -1,0 +1,291 @@
+/*
+ * MIC 3.0 — Sistema de diseño.
+ * Estética oscura tipo Lightroom/Eagle por defecto, con tema claro equivalente.
+ * Todos los componentes deben estilizarse exclusivamente con estos tokens.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Tipografía base (Inter con fallback al sistema)                    */
+/* ------------------------------------------------------------------ */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: local("Inter");
+}
+
+/* ------------------------------------------------------------------ */
+/* Tokens — tema oscuro (predeterminado)                              */
+/* ------------------------------------------------------------------ */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Superficies */
+  --color-fondo: #1a1c20;
+  --color-superficie: #22252b;
+  --color-panel: #1e2126;
+  --color-elevado: #2a2e35;
+  --color-borde: #2e3138;
+  --color-borde-fuerte: #3a3e46;
+
+  /* Texto */
+  --color-texto: #e8eaed;
+  --color-texto-secundario: #9aa0a8;
+  --color-texto-tenue: #6b7178;
+  --color-texto-sobre-acento: #ffffff;
+
+  /* Acentos y estados */
+  --color-acento: #4f8cff;
+  --color-acento-hover: #6ba0ff;
+  --color-acento-tenue: rgba(79, 140, 255, 0.16);
+  --color-peligro: #f0556b;
+  --color-peligro-hover: #ff6e82;
+  --color-peligro-tenue: rgba(240, 85, 107, 0.16);
+  --color-exito: #46c08a;
+  --color-exito-tenue: rgba(70, 192, 138, 0.16);
+  --color-aviso: #e0a13a;
+  --color-aviso-tenue: rgba(224, 161, 58, 0.16);
+
+  /* Selección y resaltado */
+  --color-seleccion: rgba(79, 140, 255, 0.22);
+  --color-hover: rgba(255, 255, 255, 0.05);
+  --color-activo: rgba(255, 255, 255, 0.09);
+  --color-overlay: rgba(0, 0, 0, 0.55);
+
+  /* Scrollbar */
+  --color-scrollbar: #3a3e46;
+  --color-scrollbar-hover: #4a4f58;
+
+  /* Sombras */
+  --sombra-1: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --sombra-2: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --sombra-3: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tokens — tema claro                                                */
+/* ------------------------------------------------------------------ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-fondo: #f3f4f6;
+  --color-superficie: #ffffff;
+  --color-panel: #fafbfc;
+  --color-elevado: #ffffff;
+  --color-borde: #e2e5ea;
+  --color-borde-fuerte: #cfd4dc;
+
+  --color-texto: #1d2128;
+  --color-texto-secundario: #5a626c;
+  --color-texto-tenue: #98a0aa;
+  --color-texto-sobre-acento: #ffffff;
+
+  --color-acento: #2f6bdb;
+  --color-acento-hover: #2459c0;
+  --color-acento-tenue: rgba(47, 107, 219, 0.12);
+  --color-peligro: #d63a52;
+  --color-peligro-hover: #bf2f46;
+  --color-peligro-tenue: rgba(214, 58, 82, 0.12);
+  --color-exito: #2fa372;
+  --color-exito-tenue: rgba(47, 163, 114, 0.12);
+  --color-aviso: #c47f1d;
+  --color-aviso-tenue: rgba(196, 127, 29, 0.12);
+
+  --color-seleccion: rgba(47, 107, 219, 0.16);
+  --color-hover: rgba(0, 0, 0, 0.04);
+  --color-activo: rgba(0, 0, 0, 0.07);
+  --color-overlay: rgba(20, 24, 30, 0.4);
+
+  --color-scrollbar: #c5cad2;
+  --color-scrollbar-hover: #aab1bb;
+
+  --sombra-1: 0 1px 3px rgba(20, 24, 30, 0.1);
+  --sombra-2: 0 4px 14px rgba(20, 24, 30, 0.12);
+  --sombra-3: 0 12px 40px rgba(20, 24, 30, 0.18);
+}
+
+/* ------------------------------------------------------------------ */
+/* Tokens independientes del tema                                     */
+/* ------------------------------------------------------------------ */
+:root {
+  /* Tipografía */
+  --fuente:
+    "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  --fuente-mono:
+    ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
+    monospace;
+  --tam-fuente: 13px;
+  --tam-fuente-sm: 12px;
+  --tam-fuente-xs: 11px;
+  --tam-fuente-lg: 15px;
+  --tam-fuente-xl: 18px;
+  --interlineado: 1.45;
+
+  /* Escala de espaciado (base 4px) */
+  --esp-1: 4px;
+  --esp-2: 8px;
+  --esp-3: 12px;
+  --esp-4: 16px;
+  --esp-5: 20px;
+  --esp-6: 24px;
+  --esp-8: 32px;
+  --esp-10: 40px;
+
+  /* Radios */
+  --radio-sm: 4px;
+  --radio: 6px;
+  --radio-lg: 10px;
+  --radio-pill: 999px;
+
+  /* Alturas de control */
+  --alto-control: 30px;
+  --alto-control-sm: 26px;
+  --alto-control-lg: 34px;
+
+  /* Transiciones */
+  --transicion: 140ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transicion-rapida: 90ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Anillo de foco accesible */
+  --foco-ring: 0 0 0 2px var(--color-fondo), 0 0 0 4px var(--color-acento);
+
+  /* Capas (z-index) */
+  --z-sticky: 100;
+  --z-menu: 400;
+  --z-modal: 600;
+  --z-toast: 800;
+  --z-tooltip: 900;
+}
+
+/* ------------------------------------------------------------------ */
+/* Reset y base                                                       */
+/* ------------------------------------------------------------------ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+html {
+  font-family: var(--fuente);
+  font-size: var(--tam-fuente);
+  line-height: var(--interlineado);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--color-fondo);
+  color: var(--color-texto);
+  overflow: hidden;
+  user-select: none;
+}
+
+#app {
+  height: 100%;
+  width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* Datos tabulares: cifras alineadas */
+.tabular,
+[data-numerico],
+.dato-numerico {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+a {
+  color: var(--color-acento);
+  text-decoration: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Foco accesible                                                     */
+/* ------------------------------------------------------------------ */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--foco-ring);
+  border-radius: var(--radio-sm);
+}
+
+/* Los controles de formulario ya marcan su propio foco (borde/realce del
+   contenedor); sin esto el anillo global se duplicaba dentro del campo y se
+   veían dos contornos. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  box-shadow: none;
+  border-radius: inherit;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scrollbars finos estilizados                                       */
+/* ------------------------------------------------------------------ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-scrollbar) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar);
+  border-radius: var(--radio-pill);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-hover);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* Utilidades de animación                                            */
+/* ------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Selección de texto del navegador */
+::selection {
+  background: var(--color-seleccion);
+}

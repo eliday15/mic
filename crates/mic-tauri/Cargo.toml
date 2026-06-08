@@ -1,0 +1,36 @@
+[package]
+name = "mic-tauri"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "mic_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+mic-core = { path = "../mic-core" }
+mic-db = { path = "../mic-db" }
+mic-thumbs = { path = "../mic-thumbs" }
+mic-migrator = { path = "../mic-migrator" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+rusqlite = { workspace = true }
+csv = { workspace = true }
+encoding_rs = { workspace = true }
+rust_xlsxwriter = "0.79"
+calamine = { version = "0.26", features = ["dates"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zip = "2"
+
+[dev-dependencies]
+tempfile = "3"

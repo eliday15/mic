@@ -1,0 +1,8 @@
+target/
+node_modules/
+dist/
+*.micdb
+*.micdb-wal
+*.micdb-shm
+.thumbs/
+.DS_Store
