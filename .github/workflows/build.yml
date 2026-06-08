@@ -12,6 +12,10 @@ on:
     branches: [main]
     tags: ["v*"]
 
+# Necesario para que el paso de Release pueda crear/editar el release del tag.
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
