@@ -51,6 +51,12 @@ jobs:
       - name: Dependencias del frontend
         run: npm ci
 
+      # Windows: comprueba que los binarios de mdbtools empaquetados arrancan
+      # (con sus DLLs) y leen un .mdb real. Si falla, el build entero falla.
+      - name: Probar mdbtools empaquetado (Windows)
+        if: matrix.nombre == 'windows'
+        run: cargo test -p mic-tauri --test migracion_mdbtools -- --nocapture
+
       - name: Compilar instaladores (tauri build)
         run: npm run tauri build -- ${{ matrix.args }}
 

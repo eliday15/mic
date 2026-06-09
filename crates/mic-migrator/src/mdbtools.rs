@@ -6,26 +6,74 @@
 //! se captura **como bytes** (`Vec<u8>`), porque los `.mdb` están en
 //! Windows-1252 y la decodificación a UTF-8 la hace [`crate::csv_parser`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use mic_core::error::MicError;
 
 /// Directorios donde buscar los binarios de mdbtools además del `PATH`.
 const DIRS_EXTRA: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
 
+/// Directorio de recursos donde van los binarios de mdbtools **embebidos** en
+/// la app (caso Windows: el instalador trae `mdb-*.exe` + sus DLLs junto al
+/// ejecutable). Lo registra la capa Tauri al arrancar con
+/// [`registrar_dir_empaquetado`]; si no se registra (Mac/Linux con mdbtools del
+/// sistema, o en tests), se cae a `DIRS_EXTRA`/`PATH`.
+static DIR_EMPAQUETADO: OnceLock<PathBuf> = OnceLock::new();
+
+/// Registra el directorio de recursos donde residen los binarios embebidos de
+/// mdbtools (Windows).
+///
+/// Lo invoca la app Tauri en su `.setup(...)`, resolviendo la ruta del bundle de
+/// recursos. En Windows los ejecutables se distribuyen dentro del instalador
+/// (`mdb-tables.exe`, `mdb-export.exe`, ... + DLLs), de modo que el usuario no
+/// necesita instalar mdbtools por su cuenta. Es idempotente: solo el primer
+/// registro tiene efecto (los siguientes son no-op).
+pub fn registrar_dir_empaquetado(dir: PathBuf) {
+    let _ = DIR_EMPAQUETADO.set(dir);
+}
+
 /// Localiza el ejecutable `nombre` (p. ej. `"mdb-export"`).
 ///
-/// Devuelve la ruta absoluta del binario si existe en alguno de los directorios
-/// extra; si no, devuelve el nombre tal cual para que `Command` lo resuelva por
-/// `PATH`. La detección real de disponibilidad la hace [`disponible`].
+/// Orden de prioridad:
+/// 1. El directorio empaquetado (si se registró): se prueba `dir/nombre` y
+///    `dir/nombre.exe`. En Windows el archivo lleva extensión `.exe`, y para una
+///    ruta absoluta hay que nombrarlo completo (`Command` no añade `.exe` cuando
+///    se le pasa una ruta con directorio, solo cuando resuelve por `PATH`).
+/// 2. Los directorios extra del sistema (Homebrew, `/usr/bin`...), probando
+///    también `nombre` y `nombre.exe`.
+/// 3. El nombre tal cual, para que `Command` lo resuelva por `PATH`.
+///
+/// La detección real de disponibilidad la hace [`disponible`].
 fn localizar(nombre: &str) -> String {
-    for dir in DIRS_EXTRA {
-        let cand = Path::new(dir).join(nombre);
-        if cand.is_file() {
-            return cand.to_string_lossy().into_owned();
+    let nombre_exe = format!("{nombre}.exe");
+
+    // (1) Binarios embebidos en la app. SOLO en Windows: son ejecutables PE
+    // (.exe/.dll) que no corren en Mac/Linux. Aunque el dir se registre en otras
+    // plataformas (el bundle los incluye), aquí se ignora para no devolver un
+    // .exe inservible y caer así al mdbtools del sistema.
+    #[cfg(target_os = "windows")]
+    if let Some(dir) = DIR_EMPAQUETADO.get() {
+        for cand_nombre in [nombre, nombre_exe.as_str()] {
+            let cand = dir.join(cand_nombre);
+            if cand.is_file() {
+                return cand.to_string_lossy().into_owned();
+            }
         }
     }
+
+    // (2) Rutas típicas del sistema.
+    for dir in DIRS_EXTRA {
+        for cand_nombre in [nombre, nombre_exe.as_str()] {
+            let cand = Path::new(dir).join(cand_nombre);
+            if cand.is_file() {
+                return cand.to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    // (3) Que lo resuelva el PATH.
     nombre.to_string()
 }
 

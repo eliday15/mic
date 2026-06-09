@@ -38,6 +38,20 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::nuevo())
+        .setup(|app| {
+            // Registra el directorio de recursos donde la app empaqueta los
+            // binarios de mdbtools (Windows). Así la importación de álbumes Access
+            // `.mdb` funciona sin que el usuario instale mdbtools por su cuenta.
+            // En Mac/Linux esta ruta normalmente no contiene los `.exe`, por lo que
+            // el migrador se cae al mdbtools del sistema (ver `mdbtools::localizar`).
+            if let Ok(dir) = app.path().resolve(
+                "resources/mdbtools/win-x86",
+                tauri::path::BaseDirectory::Resource,
+            ) {
+                mic_migrator::mdbtools::registrar_dir_empaquetado(dir);
+            }
+            Ok(())
+        })
         .register_asynchronous_uri_scheme_protocol("thumb", manejar_thumb)
         .invoke_handler(tauri::generate_handler![
             // Álbum
