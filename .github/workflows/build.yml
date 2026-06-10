@@ -73,7 +73,10 @@ jobs:
           Write-Host "Instalando en silencio: $($setup.Name)"
           Start-Process -FilePath $setup.FullName -ArgumentList "/S" -Wait
 
-          # Localiza MIC.exe: registro de desinstalación o rutas típicas.
+          # Localiza el directorio instalado: registro de desinstalación o rutas
+          # típicas. No se asume el nombre del binario principal (Tauri lo nombra
+          # mic-tauri.exe salvo mainBinaryName); lo que valida este test es que
+          # mdbtools quede en la subruta que la app resuelve en runtime.
           $candidatos = @()
           $reg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
                  Where-Object { $_.DisplayName -eq "MIC" } | Select-Object -First 1
@@ -81,16 +84,17 @@ jobs:
           # ("C:\..."), que rompe Join-Path; se limpian antes de usar.
           if ($reg -and $reg.InstallLocation) { $candidatos += $reg.InstallLocation.Trim('"') }
           $candidatos += "$env:LOCALAPPDATA\Programs\MIC", "$env:LOCALAPPDATA\MIC", "$env:ProgramFiles\MIC"
-          $instDir = $candidatos | Where-Object { $_ -and (Test-Path (Join-Path $_ "MIC.exe")) } | Select-Object -First 1
-          if (-not $instDir) { throw "No se encontró MIC.exe instalado. Candidatos: $($candidatos -join '; ')" }
-          Write-Host "Instalado en: $instDir"
-
-          # Los binarios deben estar en la ruta relativa que la app resuelve.
-          $mdb = Join-Path $instDir "resources\mdbtools\win-x86\mdb-tables.exe"
-          if (-not (Test-Path $mdb)) {
-            Get-ChildItem -Recurse $instDir | Select-Object -ExpandProperty FullName | Write-Host
-            throw "mdb-tables.exe NO está en resources\mdbtools\win-x86 del directorio instalado"
+          $instDir = $candidatos | Where-Object { $_ -and (Test-Path (Join-Path $_ "resources\mdbtools\win-x86\mdb-tables.exe")) } | Select-Object -First 1
+          if (-not $instDir) {
+            foreach ($c in ($candidatos | Select-Object -Unique)) {
+              Write-Host "--- contenido de ${c}:"
+              if (Test-Path $c) { Get-ChildItem -Recurse $c | Select-Object -ExpandProperty FullName | Write-Host }
+              else { Write-Host "(no existe)" }
+            }
+            throw "mdbtools NO está en resources\mdbtools\win-x86 de ningún directorio instalado. Candidatos: $($candidatos -join '; ')"
           }
+          Write-Host "Instalado en: $instDir"
+          $mdb = Join-Path $instDir "resources\mdbtools\win-x86\mdb-tables.exe"
 
           # Y deben FUNCIONAR desde ahí (DLLs incluidas) leyendo un Access real.
           $salida = & $mdb -1 "crates\mic-migrator\tests\fixtures\test.mdb"
