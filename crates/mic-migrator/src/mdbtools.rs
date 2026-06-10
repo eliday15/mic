@@ -34,6 +34,28 @@ pub fn registrar_dir_empaquetado(dir: PathBuf) {
     let _ = DIR_EMPAQUETADO.set(dir);
 }
 
+/// Directorio de binarios embebidos a usar: el registrado, o (solo Windows) el
+/// auto-descubierto junto al ejecutable.
+///
+/// El auto-descubrimiento (`<dir del exe>/resources/mdbtools/win-x86`, la misma
+/// ruta relativa que declara `tauri.conf.json`) es una red de seguridad: cubre
+/// el caso en que nadie llamó a [`registrar_dir_empaquetado`] (tests, otro punto
+/// de entrada) o en que la resolución de recursos de Tauri cambiara. Se calcula
+/// una sola vez y solo se acepta si contiene `mdb-export.exe`.
+#[cfg(target_os = "windows")]
+fn dir_embebido() -> Option<&'static PathBuf> {
+    if let Some(dir) = DIR_EMPAQUETADO.get() {
+        return Some(dir);
+    }
+    static AUTO: OnceLock<Option<PathBuf>> = OnceLock::new();
+    AUTO.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?;
+        let cand = exe.parent()?.join("resources").join("mdbtools").join("win-x86");
+        cand.join("mdb-export.exe").is_file().then_some(cand)
+    })
+    .as_ref()
+}
+
 /// Localiza el ejecutable `nombre` (p. ej. `"mdb-export"`).
 ///
 /// Orden de prioridad:
@@ -54,7 +76,7 @@ fn localizar(nombre: &str) -> String {
     // plataformas (el bundle los incluye), aquí se ignora para no devolver un
     // .exe inservible y caer así al mdbtools del sistema.
     #[cfg(target_os = "windows")]
-    if let Some(dir) = DIR_EMPAQUETADO.get() {
+    if let Some(dir) = dir_embebido() {
         for cand_nombre in [nombre, nombre_exe.as_str()] {
             let cand = dir.join(cand_nombre);
             if cand.is_file() {

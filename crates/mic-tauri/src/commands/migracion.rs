@@ -24,22 +24,19 @@ struct ProgresoEvento {
     total: u64,
 }
 
-/// Nombres de los binarios de mdbtools que la migración necesita.
-const BINARIOS_MDBTOOLS: &[&str] = &["mdb-tables", "mdb-export", "mdb-schema"];
-
-/// Comprueba si mdbtools está disponible en el `PATH` del sistema.
+/// Comprueba si mdbtools está disponible para el migrador.
 ///
-/// Devuelve `true` solo si los tres binarios usados por el migrador existen y
-/// son ejecutables. La búsqueda recorre las entradas de `PATH` (compatible con
-/// macOS/Linux y, en Windows, con los `.exe` instalados en el `PATH`).
+/// Delega en `mic_migrator::mdbtools::disponible()`, la MISMA lógica de
+/// localización que usan inspeccionar/migrar: binarios empaquetados con la app
+/// (Windows), rutas típicas del sistema (Homebrew…) y `PATH`. Importante: este
+/// comando no debe tener una búsqueda propia — tener dos fuentes de verdad fue
+/// justo el bug que bloqueaba la importación en Windows aunque los binarios
+/// embebidos estuvieran instalados.
 #[tauri::command]
 pub async fn migracion_verificar_mdbtools() -> Result<bool, String> {
-    let disponible = tokio::task::spawn_blocking(|| {
-        BINARIOS_MDBTOOLS.iter().all(|bin| binario_en_path(bin))
-    })
-    .await
-    .map_err(|e| format!("error interno al verificar mdbtools: {e}"))?;
-    Ok(disponible)
+    tokio::task::spawn_blocking(mic_migrator::mdbtools::disponible)
+        .await
+        .map_err(|e| format!("error interno al verificar mdbtools: {e}"))
 }
 
 /// Inspecciona un `.mdb` sin migrarlo: tablas, campos, total estimado y si tiene
@@ -85,29 +82,3 @@ pub async fn migracion_ejecutar(
         .map_err(a_string)
 }
 
-/// ¿Existe `nombre` (o `nombre.exe` en Windows) como ejecutable en el `PATH`?
-fn binario_en_path(nombre: &str) -> bool {
-    let path = match std::env::var_os("PATH") {
-        Some(p) => p,
-        None => return false,
-    };
-    let candidatos: &[String] = &candidatos_nombre(nombre);
-    for dir in std::env::split_paths(&path) {
-        for cand in candidatos {
-            let completo = dir.join(cand);
-            if completo.is_file() {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Nombres de archivo candidatos para un binario, según la plataforma.
-fn candidatos_nombre(nombre: &str) -> Vec<String> {
-    if cfg!(windows) {
-        vec![format!("{nombre}.exe"), nombre.to_string()]
-    } else {
-        vec![nombre.to_string()]
-    }
-}
