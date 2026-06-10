@@ -65,3 +65,35 @@ fn mdbtools_disponible_empaquetado() {
         "los binarios empaquetados deben arrancar (DLLs presentes)"
     );
 }
+
+/// `inspeccionar` de punta a punta sobre el fixture.
+///
+/// Pasa por la copia de trabajo local (los álbumes reales viven en carpetas de
+/// red de un servidor; ver `copia_local` en el migrador) y por los shell-outs
+/// con plazo. Valida tablas, conteo y que la copia temporal se limpie.
+#[test]
+fn inspeccionar_fixture_via_copia_local() {
+    #[cfg(windows)]
+    mdbtools::registrar_dir_empaquetado(dir_empaquetado());
+
+    let insp = mic_migrator::inspeccionar(&fixture()).expect("inspeccionar el fixture");
+    assert!(
+        insp.tablas.iter().any(|t| t == "Table1"),
+        "la inspección debe listar 'Table1', pero dio: {:?}",
+        insp.tablas
+    );
+    // El fixture no es un álbum MIC: sin tabla 'Principal', el estimado es 0.
+    assert_eq!(insp.total_estimado, 0);
+
+    // La copia temporal de trabajo debe haberse limpiado al terminar.
+    let huerfanas: Vec<_> = std::fs::read_dir(std::env::temp_dir())
+        .expect("leer temp")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(&format!("mic-migracion-{}-", std::process::id())))
+        .collect();
+    assert!(
+        huerfanas.is_empty(),
+        "no deben quedar copias temporales del .mdb: {huerfanas:?}"
+    );
+}

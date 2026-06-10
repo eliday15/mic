@@ -17,7 +17,7 @@
 //! Todas las cadenas se decodifican Windows-1252 → UTF-8 en [`crate::csv_parser`].
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mic_core::error::MicError;
 use mic_core::model::{CampoDef, CampoNuevo, TipoCampo, Valor, Valores};
@@ -95,6 +95,67 @@ fn nombre_tabla<'a>(tablas: &'a [String], nombre: &str) -> Option<&'a str> {
 }
 
 // ---------------------------------------------------------------------------
+// Copia de trabajo local
+// ---------------------------------------------------------------------------
+
+/// Copia de trabajo local del `.mdb` de origen (se borra al soltar el guard).
+///
+/// Los álbumes del MIC clásico suelen vivir en carpetas de red de un servidor
+/// (o en unidades en la nube). mdbtools abre el archivo VARIAS veces (un
+/// proceso por tabla) y hace muchas lecturas aleatorias, que sobre SMB/nube
+/// son lentísimas o se atascan. Copiar el archivo UNA sola vez a disco local
+/// (lectura secuencial, lo que las redes sí hacen bien) y trabajar sobre la
+/// copia es más rápido y a prueba de cuelgues.
+struct CopiaLocal {
+    ruta: PathBuf,
+}
+
+impl Drop for CopiaLocal {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.ruta);
+    }
+}
+
+/// Plazo máximo para copiar el `.mdb` a disco local.
+const PLAZO_COPIA: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Copia `origen` a un temporal local único y devuelve su guard.
+///
+/// La copia corre en un hilo vigilado por un plazo: una unidad de red muerta
+/// puede atascar hasta un simple `fs::copy`, y la app no debe colgarse nunca.
+fn copia_local(origen: &Path) -> Result<CopiaLocal, MicError> {
+    static CONSECUTIVO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = CONSECUTIVO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let destino = std::env::temp_dir().join(format!(
+        "mic-migracion-{}-{n}.mdb",
+        std::process::id()
+    ));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let origen_hilo = origen.to_path_buf();
+    let destino_hilo = destino.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::copy(&origen_hilo, &destino_hilo));
+    });
+
+    match rx.recv_timeout(PLAZO_COPIA) {
+        Ok(Ok(_)) => Ok(CopiaLocal { ruta: destino }),
+        Ok(Err(e)) => {
+            let _ = std::fs::remove_file(&destino);
+            Err(MicError::Migracion(format!(
+                "no se pudo copiar el .mdb a disco local para procesarlo: {e}"
+            )))
+        }
+        Err(_) => Err(MicError::Migracion(format!(
+            "la lectura del .mdb tardó más de {} s y se canceló. La carpeta \
+             de origen (¿red o nube?) no responde; copie el archivo a esta \
+             computadora e inténtelo de nuevo desde ahí.",
+            PLAZO_COPIA.as_secs()
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Inspección
 // ---------------------------------------------------------------------------
 
@@ -112,6 +173,11 @@ pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
             ruta_mdb.display()
         )));
     }
+
+    // Trabaja sobre una copia local: el origen suele estar en una carpeta de
+    // red y mdbtools lo escanearía varias veces por SMB (lento o colgado).
+    let local = copia_local(ruta_mdb)?;
+    let ruta_mdb = local.ruta.as_path();
 
     let tablas = mdbtools::tablas(ruta_mdb)?;
 
@@ -194,7 +260,16 @@ pub fn migrar(
         )));
     }
 
+    // OJO: las imágenes del álbum viven JUNTO AL .mdb ORIGINAL (carpeta del
+    // servidor); este directorio debe calcularse antes de cambiar a la copia.
     let dir_mdb = ruta_mdb.parent().unwrap_or_else(|| Path::new("."));
+
+    // Los datos, en cambio, se leen de una copia local: mdbtools escanea el
+    // archivo completo varias veces y sobre una carpeta de red eso es
+    // lentísimo o directamente se atasca.
+    let local = copia_local(ruta_mdb)?;
+    let ruta_mdb = local.ruta.as_path();
+
     let mut reporte = MigracionReporte::default();
 
     let nombre_album = destino

@@ -6,11 +6,25 @@
 //! se captura **como bytes** (`Vec<u8>`), porque los `.mdb` están en
 //! Windows-1252 y la decodificación a UTF-8 la hace [`crate::csv_parser`].
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use mic_core::error::MicError;
+
+/// Plazo máximo para una operación de mdbtools sobre el `.mdb`.
+///
+/// Los álbumes suelen estar en carpetas de red o unidades en la nube; una
+/// lectura atascada no debe colgar la app para siempre. 120 s da margen de
+/// sobra para archivos legítimamente lentos.
+const PLAZO_OPERACION: Duration = Duration::from_secs(120);
+
+/// Plazo corto para la simple comprobación de que un binario arranca
+/// (`--help`). Si ni eso responde (p. ej. un diálogo de DLL faltante bloqueado
+/// en Windows), se reporta como no disponible en vez de colgarse.
+const PLAZO_ARRANQUE: Duration = Duration::from_secs(10);
 
 /// Directorios donde buscar los binarios de mdbtools además del `PATH`.
 const DIRS_EXTRA: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"];
@@ -103,11 +117,10 @@ fn localizar(nombre: &str) -> String {
 ///
 /// Se usa para `disponible()` y para la verificación previa a inspeccionar o
 /// migrar: si mdbtools no está instalado, el comando ni siquiera arranca.
+/// Solo importa que arranque y termine dentro del plazo; el código de salida
+/// da igual (muchas herramientas devuelven ≠0 ante `--help`).
 fn responde(nombre: &str) -> bool {
-    Command::new(localizar(nombre))
-        .arg("--help")
-        .output()
-        .is_ok()
+    lanzar_con_plazo(nombre, &["--help"], PLAZO_ARRANQUE).is_ok()
 }
 
 /// Indica si los tres binarios necesarios de mdbtools están disponibles.
@@ -124,22 +137,93 @@ pub fn disponible() -> bool {
 /// ausente) o termina con código distinto de cero (en cuyo caso se adjunta el
 /// `stderr` decodificado de forma laxa, solo para diagnóstico).
 fn ejecutar(nombre: &str, args: &[&str]) -> Result<Vec<u8>, MicError> {
-    let salida = Command::new(localizar(nombre))
-        .args(args)
-        .output()
-        .map_err(|e| {
-            MicError::Migracion(format!(
-                "no se pudo ejecutar '{nombre}' (¿mdbtools instalado?): {e}"
-            ))
-        })?;
-    if !salida.status.success() {
-        let err = String::from_utf8_lossy(&salida.stderr);
+    let (estado, stdout, stderr) = lanzar_con_plazo(nombre, args, PLAZO_OPERACION)?;
+    if !estado.success() {
+        let err = String::from_utf8_lossy(&stderr);
         return Err(MicError::Migracion(format!(
             "'{nombre}' falló: {}",
             err.trim()
         )));
     }
-    Ok(salida.stdout)
+    Ok(stdout)
+}
+
+/// Lanza un binario de mdbtools con un plazo máximo y devuelve
+/// `(estado, stdout, stderr)`.
+///
+/// A diferencia de `Command::output()`, NUNCA espera para siempre: si el
+/// proceso no termina dentro del plazo (típico de un `.mdb` en una carpeta de
+/// red que no responde), se mata y se devuelve un error claro. Los pipes se
+/// leen en hilos aparte para que el hijo no se bloquee por buffers llenos
+/// mientras aquí se vigila el reloj.
+fn lanzar_con_plazo(
+    nombre: &str,
+    args: &[&str],
+    plazo: Duration,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), MicError> {
+    let mut cmd = Command::new(localizar(nombre));
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // Sin ventana de consola por cada proceso hijo (en Windows, cada spawn de
+    // una herramienta de consola desde una app gráfica parpadea una ventana
+    // negra; la inspección lanza varios).
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut hijo = cmd.spawn().map_err(|e| {
+        MicError::Migracion(format!(
+            "no se pudo ejecutar '{nombre}' (¿mdbtools instalado?): {e}"
+        ))
+    })?;
+
+    let mut out = hijo.stdout.take().expect("stdout en piped");
+    let mut err = hijo.stderr.take().expect("stderr en piped");
+    let lector_out = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = out.read_to_end(&mut v);
+        v
+    });
+    let lector_err = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = err.read_to_end(&mut v);
+        v
+    });
+
+    let inicio = Instant::now();
+    let estado = loop {
+        match hijo.try_wait() {
+            Ok(Some(estado)) => break estado,
+            Ok(None) if inicio.elapsed() >= plazo => {
+                let _ = hijo.kill();
+                let _ = hijo.wait();
+                return Err(MicError::Migracion(format!(
+                    "'{nombre}' tardó más de {} s y se canceló. Si el archivo \
+                     está en una carpeta de red o en la nube, cópielo a esta \
+                     computadora e inténtelo de nuevo desde ahí.",
+                    plazo.as_secs()
+                )));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => {
+                let _ = hijo.kill();
+                let _ = hijo.wait();
+                return Err(MicError::Migracion(format!(
+                    "error esperando a '{nombre}': {e}"
+                )));
+            }
+        }
+    };
+
+    let stdout = lector_out.join().unwrap_or_default();
+    let stderr = lector_err.join().unwrap_or_default();
+    Ok((estado, stdout, stderr))
 }
 
 /// Lista las tablas de un `.mdb` (una por línea, sin tablas de sistema).
@@ -189,4 +273,33 @@ pub fn exportar_csv(ruta_mdb: &Path, tabla: &str) -> Result<Vec<u8>, MicError> {
             tabla,
         ],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un proceso que excede el plazo se mata y devuelve un error claro, en
+    /// vez de colgar la app (el caso real: un `.mdb` en una carpeta de red
+    /// que no responde).
+    #[cfg(unix)]
+    #[test]
+    fn proceso_colgado_se_cancela_por_plazo() {
+        let r = lanzar_con_plazo("sleep", &["5"], Duration::from_millis(300));
+        let err = r.expect_err("debe agotar el plazo").to_string();
+        assert!(
+            err.contains("tardó más de"),
+            "el error debe explicar el plazo agotado: {err}"
+        );
+    }
+
+    /// Un proceso que termina dentro del plazo devuelve su salida normal.
+    #[cfg(unix)]
+    #[test]
+    fn proceso_rapido_no_se_ve_afectado_por_el_plazo() {
+        let (estado, stdout, _) =
+            lanzar_con_plazo("echo", &["hola"], Duration::from_secs(10)).expect("echo debe correr");
+        assert!(estado.success());
+        assert_eq!(String::from_utf8_lossy(&stdout).trim(), "hola");
+    }
 }
