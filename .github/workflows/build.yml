@@ -6,10 +6,11 @@ name: Build MIC
 # Se dispara manualmente (Actions → Build MIC → Run workflow), al hacer push a main,
 # o al publicar un tag v* (que además crea un Release con los instaladores adjuntos).
 
+# Solo en tags v* o a mano: compilar en cada push a main quemaba ~150 min
+# facturables por build (macOS cuesta 10x) y agotó la cuota del plan gratuito.
 on:
   workflow_dispatch:
   push:
-    branches: [main]
     tags: ["v*"]
 
 # Necesario para que el paso de Release pueda crear/editar el release del tag.
