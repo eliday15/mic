@@ -77,9 +77,11 @@ jobs:
           $candidatos = @()
           $reg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
                  Where-Object { $_.DisplayName -eq "MIC" } | Select-Object -First 1
-          if ($reg -and $reg.InstallLocation) { $candidatos += $reg.InstallLocation }
+          # OJO: el registro puede devolver InstallLocation ENTRE COMILLAS
+          # ("C:\..."), que rompe Join-Path; se limpian antes de usar.
+          if ($reg -and $reg.InstallLocation) { $candidatos += $reg.InstallLocation.Trim('"') }
           $candidatos += "$env:LOCALAPPDATA\Programs\MIC", "$env:LOCALAPPDATA\MIC", "$env:ProgramFiles\MIC"
-          $instDir = $candidatos | Where-Object { Test-Path (Join-Path $_ "MIC.exe") } | Select-Object -First 1
+          $instDir = $candidatos | Where-Object { $_ -and (Test-Path (Join-Path $_ "MIC.exe")) } | Select-Object -First 1
           if (-not $instDir) { throw "No se encontró MIC.exe instalado. Candidatos: $($candidatos -join '; ')" }
           Write-Host "Instalado en: $instDir"
 
