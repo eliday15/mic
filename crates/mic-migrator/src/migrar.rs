@@ -2,7 +2,7 @@
 //! (SQLite de MIC 3.0), y del importador de plantillas `.xms`.
 //!
 //! # Flujo de [`migrar`]
-//! 1. Verifica mdbtools y crea el `.micdb` ([`mic_db::AlbumDb::crear`]).
+//! 1. Crea el `.micdb` ([`mic_db::AlbumDb::crear`]).
 //! 2. Lee `propiedades` → crea los campos con [`mic_db::repo_campos`].
 //! 3. Vuelca `Principal` → tabla `principal` (INSERTs directos en transacción,
 //!    mapeando `_imagen_`, `_id_`, `_auxiliar_`, `_variantes_` y las columnas
@@ -28,8 +28,8 @@ use mic_db::AlbumDb;
 use mic_db::{fts, repo_campos, repo_filtros, repo_grupos};
 use rusqlite::params;
 
-use crate::csv_parser::{self, TablaCsv};
-use crate::mdbtools;
+use crate::csv_parser::TablaCsv;
+use crate::jet;
 use crate::paths;
 use crate::type_map::{self, parse_numero};
 
@@ -94,6 +94,26 @@ fn nombre_tabla<'a>(tablas: &'a [String], nombre: &str) -> Option<&'a str> {
         .map(|s| s.as_str())
 }
 
+/// Lee una tabla del `.mdb` con [`jet::leer_tabla`] y, si jetdb tuvo que omitir
+/// filas por errores de parseo, lo registra como advertencia en el reporte.
+///
+/// Las filas omitidas NUNCA son un error de la migración: un álbum con una fila
+/// corrupta debe migrar el resto y avisar de las que faltan.
+fn leer_para_migrar(
+    ruta_mdb: &Path,
+    tabla: &str,
+    reporte: &mut MigracionReporte,
+) -> Result<TablaCsv, MicError> {
+    let leida = jet::leer_tabla(ruta_mdb, tabla)?;
+    if leida.omitidas > 0 {
+        reporte.advertencias.push(format!(
+            "la tabla '{tabla}' tenía {} fila(s) que no se pudieron leer y se omitieron",
+            leida.omitidas
+        ));
+    }
+    Ok(leida.csv)
+}
+
 // ---------------------------------------------------------------------------
 // Copia de trabajo local
 // ---------------------------------------------------------------------------
@@ -101,11 +121,10 @@ fn nombre_tabla<'a>(tablas: &'a [String], nombre: &str) -> Option<&'a str> {
 /// Copia de trabajo local del `.mdb` de origen (se borra al soltar el guard).
 ///
 /// Los álbumes del MIC clásico suelen vivir en carpetas de red de un servidor
-/// (o en unidades en la nube). mdbtools abre el archivo VARIAS veces (un
-/// proceso por tabla) y hace muchas lecturas aleatorias, que sobre SMB/nube
-/// son lentísimas o se atascan. Copiar el archivo UNA sola vez a disco local
-/// (lectura secuencial, lo que las redes sí hacen bien) y trabajar sobre la
-/// copia es más rápido y a prueba de cuelgues.
+/// (o en unidades en la nube). jetdb lee el archivo en proceso, pero hace muchas
+/// lecturas aleatorias, que sobre SMB/nube son lentísimas o se atascan. Copiar
+/// el archivo UNA sola vez a disco local (lectura secuencial, lo que las redes
+/// sí hacen bien) y trabajar sobre la copia es más rápido y a prueba de cuelgues.
 struct CopiaLocal {
     ruta: PathBuf,
 }
@@ -162,11 +181,6 @@ fn copia_local(origen: &Path) -> Result<CopiaLocal, MicError> {
 /// Inspecciona un `.mdb` sin migrarlo: lista tablas, campos de usuario, total
 /// estimado y si tiene variantes.
 pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
-    if !mdbtools::disponible() {
-        return Err(MicError::Migracion(
-            "mdbtools no está instalado (instale 'mdbtools')".into(),
-        ));
-    }
     if !ruta_mdb.exists() {
         return Err(MicError::NoEncontrado(format!(
             "archivo .mdb no encontrado: {}",
@@ -175,16 +189,17 @@ pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
     }
 
     // Trabaja sobre una copia local: el origen suele estar en una carpeta de
-    // red y mdbtools lo escanearía varias veces por SMB (lento o colgado).
+    // red y jetdb hace lecturas aleatorias que sobre SMB son lentas (copiar a
+    // local una vez, secuencialmente, es lo que las redes sí hacen bien).
     let local = copia_local(ruta_mdb)?;
     let ruta_mdb = local.ruta.as_path();
 
-    let tablas = mdbtools::tablas(ruta_mdb)?;
+    let tablas = jet::tablas(ruta_mdb)?;
 
     // Campos de usuario desde propiedades.
     let campos = if existe_tabla(&tablas, "propiedades") {
         let nom = nombre_tabla(&tablas, "propiedades").unwrap();
-        let props = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+        let props = jet::leer_tabla(ruta_mdb, nom)?.csv;
         type_map::mapear_campos(&props)
             .into_iter()
             .map(|c| (c.def.nombre, tipo_legible(c.def.tipo).to_string()))
@@ -196,8 +211,7 @@ pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
     // Total estimado de Principal.
     let total_estimado = if existe_tabla(&tablas, "Principal") {
         let nom = nombre_tabla(&tablas, "Principal").unwrap();
-        let t = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
-        t.len() as u64
+        jet::leer_tabla(ruta_mdb, nom)?.csv.len() as u64
     } else {
         0
     };
@@ -205,8 +219,7 @@ pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
     // Variantes con filas.
     let tiene_variantes = if existe_tabla(&tablas, "Variantes") {
         let nom = nombre_tabla(&tablas, "Variantes").unwrap();
-        let t = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
-        !t.is_empty()
+        !jet::leer_tabla(ruta_mdb, nom)?.csv.is_empty()
     } else {
         false
     };
@@ -248,11 +261,6 @@ pub fn migrar(
     destino: &Path,
     progreso: ProgresoMigracion,
 ) -> Result<MigracionReporte, MicError> {
-    if !mdbtools::disponible() {
-        return Err(MicError::Migracion(
-            "mdbtools no está instalado (instale 'mdbtools')".into(),
-        ));
-    }
     if !ruta_mdb.exists() {
         return Err(MicError::NoEncontrado(format!(
             "archivo .mdb no encontrado: {}",
@@ -264,9 +272,9 @@ pub fn migrar(
     // servidor); este directorio debe calcularse antes de cambiar a la copia.
     let dir_mdb = ruta_mdb.parent().unwrap_or_else(|| Path::new("."));
 
-    // Los datos, en cambio, se leen de una copia local: mdbtools escanea el
-    // archivo completo varias veces y sobre una carpeta de red eso es
-    // lentísimo o directamente se atasca.
+    // Los datos, en cambio, se leen de una copia local: jetdb hace muchas
+    // lecturas aleatorias y sobre una carpeta de red eso es lentísimo; copiar
+    // el archivo una vez (lectura secuencial) y leer la copia es más rápido.
     let local = copia_local(ruta_mdb)?;
     let ruta_mdb = local.ruta.as_path();
 
@@ -281,7 +289,7 @@ pub fn migrar(
     let db = AlbumDb::crear(destino, &nombre_album)?;
     let dir_imagenes_destino = db.dir_imagenes();
 
-    let tablas = mdbtools::tablas(ruta_mdb)?;
+    let tablas = jet::tablas(ruta_mdb)?;
 
     // --- 1) Campos (propiedades) -------------------------------------------
     progreso("Campos", 0, 0);
@@ -289,16 +297,16 @@ pub fn migrar(
 
     // --- 2) Principal ------------------------------------------------------
     if existe_tabla(&tablas, "Principal") {
-        let nom = nombre_tabla(&tablas, "Principal").unwrap();
-        let datos = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+        let nom = nombre_tabla(&tablas, "Principal").unwrap().to_string();
+        let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
         reporte.filas_principal =
             migrar_registros(&db, &ctx, &datos, true, dir_mdb, &progreso, &mut reporte)?;
     }
 
     // --- 3) Variantes ------------------------------------------------------
     if existe_tabla(&tablas, "Variantes") {
-        let nom = nombre_tabla(&tablas, "Variantes").unwrap();
-        let datos = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+        let nom = nombre_tabla(&tablas, "Variantes").unwrap().to_string();
+        let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
         if !datos.is_empty() {
             reporte.filas_variantes = migrar_registros(
                 &db, &ctx, &datos, false, dir_mdb, &progreso, &mut reporte,
@@ -308,29 +316,29 @@ pub fn migrar(
 
     // --- 4) Multidatos -----------------------------------------------------
     if existe_tabla(&tablas, "Multidatos") {
-        let nom = nombre_tabla(&tablas, "Multidatos").unwrap();
-        let datos = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+        let nom = nombre_tabla(&tablas, "Multidatos").unwrap().to_string();
+        let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
         reporte.filas_multidatos = migrar_multidatos(&db, &ctx, &datos, &mut reporte)?;
     }
 
     // --- 5) Categorias -----------------------------------------------------
     if existe_tabla(&tablas, "Categorias") {
-        let nom = nombre_tabla(&tablas, "Categorias").unwrap();
-        let datos = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+        let nom = nombre_tabla(&tablas, "Categorias").unwrap().to_string();
+        let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
         migrar_categorias(&db, &ctx, &datos, &mut reporte)?;
     }
 
     // --- 6) Grupos ---------------------------------------------------------
     if existe_tabla(&tablas, "Grupos") {
-        let nom = nombre_tabla(&tablas, "Grupos").unwrap();
-        let datos = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+        let nom = nombre_tabla(&tablas, "Grupos").unwrap().to_string();
+        let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
         migrar_grupos(&db, &datos, &mut reporte)?;
     }
 
     // --- 7) FiltrosAv ------------------------------------------------------
     if existe_tabla(&tablas, "FiltrosAv") {
-        let nom = nombre_tabla(&tablas, "FiltrosAv").unwrap();
-        let datos = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+        let nom = nombre_tabla(&tablas, "FiltrosAv").unwrap().to_string();
+        let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
         migrar_filtros(&db, &datos, &mut reporte)?;
     }
 
@@ -361,8 +369,8 @@ fn migrar_campos(
     let mut campos = Vec::new();
     let mut por_nombre = HashMap::new();
 
-    if let Some(nom) = nombre_tabla(tablas, "propiedades") {
-        let props = csv_parser::parsear(&mdbtools::exportar_csv(ruta_mdb, nom)?)?;
+    if let Some(nom) = nombre_tabla(tablas, "propiedades").map(|s| s.to_string()) {
+        let props = leer_para_migrar(ruta_mdb, &nom, reporte)?;
         let origen = type_map::mapear_campos(&props);
         let conn = db.conn()?;
         for c in origen {
@@ -1161,7 +1169,7 @@ pub fn parse_xms(ruta: &Path) -> Result<Vec<CampoNuevo>, MicError> {
         MicError::Migracion(format!("no se pudo leer la plantilla '{}': {e}", ruta.display()))
     })?;
     // Las plantillas se guardan en iso-8859-1/Windows-1252.
-    let texto = csv_parser::decodificar_cp1252(&bytes);
+    let texto = crate::csv_parser::decodificar_cp1252(&bytes);
     parse_xms_texto(&texto)
 }
 

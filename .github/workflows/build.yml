@@ -52,56 +52,8 @@ jobs:
       - name: Dependencias del frontend
         run: npm ci
 
-      # Windows: comprueba que los binarios de mdbtools empaquetados arrancan
-      # (con sus DLLs) y leen un .mdb real. Si falla, el build entero falla.
-      - name: Probar mdbtools empaquetado (Windows)
-        if: matrix.nombre == 'windows'
-        run: cargo test -p mic-tauri --test migracion_mdbtools -- --nocapture
-
       - name: Compilar instaladores (tauri build)
         run: npm run tauri build -- ${{ matrix.args }}
-
-      # Windows: prueba END-TO-END del instalador real — instala el NSIS en
-      # silencio, verifica que mdbtools quedó junto a MIC.exe (la misma ruta
-      # relativa que la app resuelve en runtime) y ejecuta el binario INSTALADO
-      # contra un .mdb de verdad. Detecta lo que un test unitario no ve:
-      # layout del instalador, DLLs faltantes, rutas mal resueltas.
-      - name: Probar instalador NSIS instalado (Windows)
-        if: matrix.nombre == 'windows'
-        shell: pwsh
-        run: |
-          $setup = Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1
-          Write-Host "Instalando en silencio: $($setup.Name)"
-          Start-Process -FilePath $setup.FullName -ArgumentList "/S" -Wait
-
-          # Localiza el directorio instalado: registro de desinstalación o rutas
-          # típicas. No se asume el nombre del binario principal (Tauri lo nombra
-          # mic-tauri.exe salvo mainBinaryName); lo que valida este test es que
-          # mdbtools quede en la subruta que la app resuelve en runtime.
-          $candidatos = @()
-          $reg = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-                 Where-Object { $_.DisplayName -eq "MIC" } | Select-Object -First 1
-          # OJO: el registro puede devolver InstallLocation ENTRE COMILLAS
-          # ("C:\..."), que rompe Join-Path; se limpian antes de usar.
-          if ($reg -and $reg.InstallLocation) { $candidatos += $reg.InstallLocation.Trim('"') }
-          $candidatos += "$env:LOCALAPPDATA\Programs\MIC", "$env:LOCALAPPDATA\MIC", "$env:ProgramFiles\MIC"
-          $instDir = $candidatos | Where-Object { $_ -and (Test-Path (Join-Path $_ "resources\mdbtools\win-x86\mdb-tables.exe")) } | Select-Object -First 1
-          if (-not $instDir) {
-            foreach ($c in ($candidatos | Select-Object -Unique)) {
-              Write-Host "--- contenido de ${c}:"
-              if (Test-Path $c) { Get-ChildItem -Recurse $c | Select-Object -ExpandProperty FullName | Write-Host }
-              else { Write-Host "(no existe)" }
-            }
-            throw "mdbtools NO está en resources\mdbtools\win-x86 de ningún directorio instalado. Candidatos: $($candidatos -join '; ')"
-          }
-          Write-Host "Instalado en: $instDir"
-          $mdb = Join-Path $instDir "resources\mdbtools\win-x86\mdb-tables.exe"
-
-          # Y deben FUNCIONAR desde ahí (DLLs incluidas) leyendo un Access real.
-          $salida = & $mdb -1 "crates\mic-migrator\tests\fixtures\test.mdb"
-          if ($LASTEXITCODE -ne 0) { throw "mdb-tables instalado falló con código $LASTEXITCODE" }
-          if ($salida -notcontains "Table1") { throw "mdb-tables instalado no listó Table1; salida: $salida" }
-          Write-Host "OK: mdbtools instalado funciona — tablas: $($salida -join ', ')"
 
       # Windows: .msi (WiX) y .exe (NSIS)
       - name: Subir instaladores de Windows

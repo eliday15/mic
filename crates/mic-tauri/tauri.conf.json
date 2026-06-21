@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MIC",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "identifier": "com.hga.mic",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -34,7 +34,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": ["resources/mdbtools/win-x86/*"]
+    ]
   }
 }

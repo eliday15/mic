@@ -1,7 +1,8 @@
 //! Comandos de migración de álbumes Access/Jet (`.mdb`) a SQLite (`.micdb`).
 //!
-//! Delegan en `mic-migrator` (shell-out a mdbtools). `migracion_ejecutar` emite
-//! el evento `migracion-progreso` por cada fase reportada por el migrador, para
+//! Delegan en `mic-migrator`, que lee los `.mdb` en proceso con el crate
+//! pure-Rust `jetdb` (sin binarios externos). `migracion_ejecutar` emite el
+//! evento `migracion-progreso` por cada fase reportada por el migrador, para
 //! que el frontend muestre una barra de progreso.
 
 use std::path::PathBuf;
@@ -24,19 +25,16 @@ struct ProgresoEvento {
     total: u64,
 }
 
-/// Comprueba si mdbtools está disponible para el migrador.
+/// Comprueba si el lector de `.mdb` está disponible.
 ///
-/// Delega en `mic_migrator::mdbtools::disponible()`, la MISMA lógica de
-/// localización que usan inspeccionar/migrar: binarios empaquetados con la app
-/// (Windows), rutas típicas del sistema (Homebrew…) y `PATH`. Importante: este
-/// comando no debe tener una búsqueda propia — tener dos fuentes de verdad fue
-/// justo el bug que bloqueaba la importación en Windows aunque los binarios
-/// embebidos estuvieran instalados.
+/// Desde MIC 3.0.4 la lectura de Access es **en proceso** (crate pure-Rust
+/// `jetdb`, compilado dentro de la app): ya no hay binarios externos que puedan
+/// faltar, así que siempre está disponible. El comando se conserva porque el
+/// frontend lo invoca antes de mostrar el asistente de migración; devolver
+/// `true` mantiene esa comprobación inofensiva sin romper el contrato.
 #[tauri::command]
 pub async fn migracion_verificar_mdbtools() -> Result<bool, String> {
-    tokio::task::spawn_blocking(mic_migrator::mdbtools::disponible)
-        .await
-        .map_err(|e| format!("error interno al verificar mdbtools: {e}"))
+    Ok(true)
 }
 
 /// Inspecciona un `.mdb` sin migrarlo: tablas, campos, total estimado y si tiene
