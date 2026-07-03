@@ -2677,7 +2677,7 @@ dependencies = [
 
 [[package]]
 name = "mic-core"
-version = "3.0.4"
+version = "3.0.5"
 dependencies = [
  "chrono",
  "serde",
@@ -2687,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "mic-db"
-version = "3.0.4"
+version = "3.0.5"
 dependencies = [
  "chrono",
  "image",
@@ -2704,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "mic-migrator"
-version = "3.0.4"
+version = "3.0.5"
 dependencies = [
  "chrono",
  "csv",
@@ -2723,7 +2723,7 @@ dependencies = [
 
 [[package]]
 name = "mic-tauri"
-version = "3.0.4"
+version = "3.0.5"
 dependencies = [
  "calamine",
  "chrono",
@@ -2751,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "mic-thumbs"
-version = "3.0.4"
+version = "3.0.5"
 dependencies = [
  "fast_image_resize",
  "image",

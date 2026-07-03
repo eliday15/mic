@@ -5,6 +5,7 @@
 //! normaliza rutas de imágenes de Windows (G:\MIC\imagenes\...) a relativas.
 
 pub mod csv_parser;
+pub mod diag;
 pub mod jet;
 pub mod migrar;
 pub mod paths;

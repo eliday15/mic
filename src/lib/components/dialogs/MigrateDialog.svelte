@@ -46,10 +46,26 @@
   let progreso = $state<MigracionProgreso | null>(null);
   let reporte = $state<MigracionReporte | null>(null);
   let cargando = $state(false);
+  /// Último error, mostrado DENTRO del diálogo (el toast desaparece solo; esto
+  /// no: la lección de los cuelgues "sin error" de v3.0.1–v3.0.4).
+  let errorMsg = $state<string | null>(null);
+  let version = $state("");
   let unlisten: UnlistenFn | null = null;
 
   $effect(() => {
-    if (abierto) verificar();
+    if (abierto) {
+      verificar();
+      // Escucha los pasos/progreso durante TODO el ciclo del diálogo: la
+      // inspección también emite pasos en vivo (vigía del backend).
+      void escucharMigracionProgreso((p) => (progreso = p)).then((un) => {
+        unlisten = un;
+      });
+      // Versión visible para diagnóstico remoto (en navegador/mock no existe).
+      import("@tauri-apps/api/app")
+        .then((m) => m.getVersion())
+        .then((v) => (version = v))
+        .catch(() => (version = "dev"));
+    }
     return () => {
       unlisten?.();
       unlisten = null;
@@ -81,11 +97,14 @@
 
   async function inspeccionar(): Promise<void> {
     cargando = true;
+    errorMsg = null;
+    progreso = null;
     try {
       inspeccion = await migracionInspeccionar(rutaMdb);
       fase = "inspeccion";
     } catch (e) {
-      ui.error(typeof e === "string" ? e : t.error.migracion);
+      errorMsg = typeof e === "string" ? e : t.error.migracion;
+      ui.error(errorMsg);
     } finally {
       cargando = false;
     }
@@ -107,17 +126,15 @@
     }
     fase = "ejecutando";
     progreso = null;
-    unlisten = await escucharMigracionProgreso((p) => (progreso = p));
+    errorMsg = null;
     try {
       reporte = await migracionEjecutar(rutaMdb, rutaDestino.trim());
       fase = "reporte";
       ui.exito(t.mensaje.migracionOk);
     } catch (e) {
-      ui.error(typeof e === "string" ? e : t.error.migracion);
+      errorMsg = typeof e === "string" ? e : t.error.migracion;
+      ui.error(errorMsg);
       fase = "inspeccion";
-    } finally {
-      unlisten?.();
-      unlisten = null;
     }
   }
 
@@ -169,9 +186,24 @@
           </Button>
         </div>
       </label>
+
+      {#if cargando}
+        <!-- Paso EN VIVO del backend: si algo se atora, aquí dice exactamente dónde. -->
+        <div class="mg__paso">
+          <Spinner tamano={14} />
+          <span>{progreso?.fase ?? t.migracion.inspeccionando}</span>
+        </div>
+      {/if}
+
+      {#if errorMsg}
+        <div class="mg__error" role="alert">{errorMsg}</div>
+      {/if}
     </div>
   {:else if fase === "inspeccion" && inspeccion}
     <div class="mg">
+      {#if errorMsg}
+        <div class="mg__error" role="alert">{errorMsg}</div>
+      {/if}
       <div class="mg__resumen">
         <div class="mg__dato">
           <span class="mg__rotulo">{t.migracion.inspeccion.totalEstimado}</span>
@@ -252,6 +284,8 @@
   {/if}
 
   {#snippet pie()}
+    <!-- Versión visible: para diagnóstico remoto por captura de pantalla. -->
+    <span class="mg__version">v{version}</span>
     {#if fase === "inspeccion"}
       <Button variante="fantasma" onclick={cerrar}>{t.accion.cancelar}</Button>
       <Button variante="primario" onclick={ejecutar}>
@@ -285,6 +319,29 @@
     display: flex;
     flex-direction: column;
     gap: var(--esp-1);
+  }
+  .mg__paso {
+    display: flex;
+    align-items: center;
+    gap: var(--esp-2);
+    font-size: var(--tam-fuente-sm);
+    color: var(--color-texto-secundario);
+  }
+  .mg__error {
+    padding: var(--esp-3);
+    border: 1px solid var(--color-peligro, #b91c1c);
+    border-radius: var(--radio-md);
+    background: color-mix(in srgb, var(--color-peligro, #b91c1c) 10%, transparent);
+    color: var(--color-peligro, #b91c1c);
+    font-size: var(--tam-fuente-sm);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .mg__version {
+    margin-right: auto;
+    font-size: var(--tam-fuente-xs, 11px);
+    color: var(--color-texto-secundario);
+    opacity: 0.7;
   }
   .mg__etq {
     font-size: var(--tam-fuente-xs);

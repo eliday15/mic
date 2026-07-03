@@ -48,6 +48,7 @@ pub struct TablaLeida {
 /// fuera). Las tablas de un álbum MIC (Principal, Variantes, Multidatos,
 /// Categorias, Propiedades, Grupos, FiltrosAv, Reportes…) son todas de usuario.
 pub fn tablas(ruta: &Path) -> Result<Vec<String>, MicError> {
+    crate::diag::paso("abriendo el .mdb y leyendo el catálogo de tablas");
     con_plazo(ruta, |reader| {
         let catalogo = read_catalog(reader).map_err(err_jet)?;
         Ok(catalogo
@@ -66,6 +67,7 @@ pub fn tablas(ruta: &Path) -> Result<Vec<String>, MicError> {
 /// [`valor_a_string`]. Si la tabla no existe, falla con
 /// [`MicError::NoEncontrado`].
 pub fn leer_tabla(ruta: &Path, tabla: &str) -> Result<TablaLeida, MicError> {
+    crate::diag::paso(&format!("leyendo la tabla '{tabla}'"));
     let tabla = tabla.to_string();
     con_plazo(ruta, move |reader| {
         let catalogo = read_catalog(reader).map_err(err_jet)?;

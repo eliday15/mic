@@ -473,6 +473,7 @@ export const t = {
     inspeccionar: "Inspeccionar",
     ejecutar: "Ejecutar migración",
     verificandoHerramientas: "Verificando herramientas de migración…",
+    inspeccionando: "Inspeccionando el archivo…",
     faltanHerramientas: "No se encontró mdb-tools en el sistema",
     faltanHerramientasDesc:
       "Instala mdb-tools para poder importar archivos de Access.",

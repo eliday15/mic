@@ -149,6 +149,7 @@ fn copia_local(origen: &Path) -> Result<CopiaLocal, MicError> {
         "mic-migracion-{}-{n}.mdb",
         std::process::id()
     ));
+    crate::diag::paso(&format!("copiando el .mdb a disco local ({})", origen.display()));
 
     let (tx, rx) = std::sync::mpsc::channel();
     let origen_hilo = origen.to_path_buf();
@@ -181,6 +182,7 @@ fn copia_local(origen: &Path) -> Result<CopiaLocal, MicError> {
 /// Inspecciona un `.mdb` sin migrarlo: lista tablas, campos de usuario, total
 /// estimado y si tiene variantes.
 pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
+    crate::diag::paso(&format!("inspección iniciada: {}", ruta_mdb.display()));
     if !ruta_mdb.exists() {
         return Err(MicError::NoEncontrado(format!(
             "archivo .mdb no encontrado: {}",
@@ -224,6 +226,7 @@ pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
         false
     };
 
+    crate::diag::paso("inspección completada");
     Ok(MdbInspeccion {
         tablas,
         campos,
