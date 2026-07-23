@@ -91,3 +91,32 @@ fn migra_album_mic_completo() {
         rep.advertencias
     );
 }
+
+/// El mismo álbum MIC pero en formato **Jet 3.0** — el que crea el VB6 real
+/// (`CreateDatabase(..., dbVersion30)`, frmnewp.frm:240). Este fixture lo
+/// fabricó el motor Jet auténtico de Microsoft en un runner Windows (ver
+/// `scripts/crear-jet3.ps1`); cubre Jet3 + columnas acentuadas + memo + moneda.
+#[test]
+fn migra_album_mic_jet3_completo() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/album-mic-jet3.mdb");
+
+    let insp = mic_migrator::inspeccionar(&fixture).expect("inspeccionar el álbum Jet3");
+    assert_eq!(insp.total_estimado, 60);
+    assert!(insp.tiene_variantes);
+    assert_eq!(insp.campos.len(), 9, "campos: {:?}", insp.campos);
+    assert!(
+        insp.campos.iter().any(|(n, _)| n == "Descripción"),
+        "columna acentuada intacta en Jet3: {:?}",
+        insp.campos
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let destino = dir.path().join("album.micdb");
+    let progreso: mic_migrator::ProgresoMigracion = Box::new(|_, _, _| {});
+    let rep = mic_migrator::migrar(&fixture, &destino, progreso).expect("migrar el álbum Jet3");
+    assert_eq!(rep.filas_principal, 60);
+    assert_eq!(rep.filas_variantes, 24);
+    assert_eq!(rep.filas_multidatos, 40);
+    assert!(rep.advertencias.is_empty(), "{:?}", rep.advertencias);
+}
