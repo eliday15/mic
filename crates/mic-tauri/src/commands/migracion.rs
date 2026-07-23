@@ -100,12 +100,34 @@ pub async fn migracion_inspeccionar(
     let ruta = PathBuf::from(ruta_mdb);
     let _vigia = vigia_pasos(app);
     let tarea = tokio::task::spawn_blocking(move || mic_migrator::inspeccionar(&ruta));
-    match tokio::time::timeout(PLAZO_INSPECCION, tarea).await {
+    let resultado = match tokio::time::timeout(PLAZO_INSPECCION, tarea).await {
         Ok(res) => res
-            .map_err(|e| format!("error interno al inspeccionar: {e}"))?
-            .map_err(a_string),
+            .map_err(|e| format!("error interno al inspeccionar: {e}"))
+            .and_then(|r| r.map_err(a_string)),
         Err(_) => Err(mensaje_plazo("La inspección", PLAZO_INSPECCION)),
+    };
+    // Marca de frontera: si la bitácora muestra esta línea pero la interfaz
+    // sigue girando, el problema está en la ENTREGA WebView2→JS del invoke
+    // (hipótesis 3 del informe de causa raíz), no en el backend.
+    match &resultado {
+        Ok(_) => mic_migrator::diag::paso("comando inspección respondió al webview: éxito"),
+        Err(e) => mic_migrator::diag::paso(&format!(
+            "comando inspección respondió al webview: ERROR: {e}"
+        )),
     }
+    resultado
+}
+
+/// Anota un mensaje del FRONTEND en la bitácora de migración.
+///
+/// Permite que el diálogo registre sus propios hitos (selector abierto/cerrado,
+/// promesa resuelta/rechazada) en la MISMA bitácora que el backend: así
+/// `%TEMP%\mic-migracion.log` reconstruye la historia completa a ambos lados
+/// del IPC, incluido el selector nativo (único paso sin reloj).
+#[tauri::command]
+pub async fn migracion_log(mensaje: String) -> Result<(), String> {
+    mic_migrator::diag::paso(&format!("[ui] {mensaje}"));
+    Ok(())
 }
 
 /// Ejecuta la migración completa de `ruta_mdb` a `ruta_destino` (`.micdb`),

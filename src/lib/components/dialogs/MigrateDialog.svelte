@@ -17,6 +17,7 @@
     migracionVerificarMdbtools,
     migracionInspeccionar,
     migracionEjecutar,
+    migracionLog,
   } from "$lib/ipc/commands";
   import { escucharMigracionProgreso } from "$lib/ipc/events";
   import type { UnlistenFn } from "$lib/ipc/events";
@@ -84,11 +85,17 @@
   }
 
   async function elegirMdb(): Promise<void> {
+    // Hitos en la bitácora: el selector NATIVO es el único paso sin reloj
+    // (informe de causa raíz, hip. 2); estos marcadores delatan si se congela.
+    migracionLog("abriendo selector de archivo .mdb");
     const sel = await open({
       multiple: false,
       directory: false,
       filters: [{ name: "Access", extensions: ["mdb"] }],
     });
+    migracionLog(
+      typeof sel === "string" ? `selector devolvió: ${sel}` : "selector cancelado",
+    );
     if (typeof sel === "string") {
       rutaMdb = sel;
       await inspeccionar();
@@ -99,10 +106,15 @@
     cargando = true;
     errorMsg = null;
     progreso = null;
+    migracionLog("invocando inspección desde la interfaz");
     try {
       inspeccion = await migracionInspeccionar(rutaMdb);
+      // Si la bitácora tiene la marca del backend ("respondió al webview")
+      // pero NO esta, la entrega del IPC se perdió (hip. 3 del informe).
+      migracionLog("promesa de inspección RESUELTA en la interfaz");
       fase = "inspeccion";
     } catch (e) {
+      migracionLog("promesa de inspección RECHAZADA en la interfaz");
       errorMsg = typeof e === "string" ? e : t.error.migracion;
       ui.error(errorMsg);
     } finally {

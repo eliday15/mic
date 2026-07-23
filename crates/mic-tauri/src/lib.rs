@@ -108,6 +108,7 @@ pub fn run() {
             commands::migracion::migracion_verificar_mdbtools,
             commands::migracion::migracion_inspeccionar,
             commands::migracion::migracion_ejecutar,
+            commands::migracion::migracion_log,
         ])
         .run(tauri::generate_context!())
         .expect("error al iniciar MIC");

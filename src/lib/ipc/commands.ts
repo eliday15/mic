@@ -443,6 +443,11 @@ export function migracionVerificarMdbtools(): Promise<boolean> {
 }
 
 /** Inspecciona un .mdb antes de migrar (tablas, campos, conteos). */
+/** Anota un hito del frontend en la bitácora de migración (fire-and-forget). */
+export function migracionLog(mensaje: string): void {
+  void invoke("migracion_log", { mensaje }).catch(() => {});
+}
+
 export function migracionInspeccionar(
   rutaMdb: string,
 ): Promise<MdbInspeccion> {
@@ -504,5 +509,6 @@ export const comandos = {
   thumbInvalidar,
   migracionVerificarMdbtools,
   migracionInspeccionar,
+  migracionLog,
   migracionEjecutar,
 } as const;

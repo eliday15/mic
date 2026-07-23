@@ -727,6 +727,9 @@ async function manejar(cmd: string, p: any): Promise<unknown> {
     // --- Migración ---
     case "migracion_verificar_mdbtools":
       return true;
+    case "migracion_log":
+      return null;
+
     case "migracion_inspeccionar":
       await espera(400);
       return {
