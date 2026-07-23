@@ -60,3 +60,34 @@ fn parse_xms_archivo_inexistente_es_error() {
     let r = parse_xms(std::path::Path::new("/no/existe/plantilla.xms"));
     assert!(r.is_err());
 }
+
+/// Migración COMPLETA de un álbum con el esquema exacto del MIC clásico
+/// (propiedades/Principal/Variantes/Multidatos/Categorias, acentos, memo,
+/// moneda, fechas, calculado y multidato). El fixture se generó con jackcess
+/// (ver `fixtures/CrearMdbMic.java`). Corre en TODAS las plataformas del CI —
+/// incluido el runner Windows real: si la importación de Access se rompe en
+/// Windows, este test lo detecta antes de publicar nada.
+#[test]
+fn migra_album_mic_completo() {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/album-mic.mdb");
+
+    let insp = mic_migrator::inspeccionar(&fixture).expect("inspeccionar el álbum MIC");
+    assert_eq!(insp.total_estimado, 60, "60 registros en Principal");
+    assert!(insp.tiene_variantes, "el álbum tiene variantes");
+    assert_eq!(insp.campos.len(), 9, "9 campos de usuario: {:?}", insp.campos);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let destino = dir.path().join("album.micdb");
+    let progreso: mic_migrator::ProgresoMigracion = Box::new(|_, _, _| {});
+    let rep = mic_migrator::migrar(&fixture, &destino, progreso).expect("migrar el álbum MIC");
+
+    assert_eq!(rep.filas_principal, 60);
+    assert_eq!(rep.filas_variantes, 24);
+    assert_eq!(rep.filas_multidatos, 40);
+    assert!(
+        rep.advertencias.is_empty(),
+        "sin advertencias: {:?}",
+        rep.advertencias
+    );
+}

@@ -1,0 +1,31 @@
+name: Test migración Windows
+
+# Prueba SOLO la migración de Access en un Windows real (rápido, sin compilar
+# instaladores). Para iterar sobre el bug de importación sin esperar el build
+# completo: Actions → "Test migración Windows" → Run workflow.
+on: workflow_dispatch
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # Migra un álbum con el esquema exacto del MIC clásico y además ejecuta
+      # el arnés mic-inspect con bitácora visible.
+      - name: Tests del migrador (esquema MIC real)
+        run: cargo test -p mic-migrator -- --nocapture
+
+      - name: Arnés mic-inspect sobre el álbum MIC (bitácora incluida)
+        shell: pwsh
+        run: |
+          cargo run -p mic-migrator --bin mic-inspect -- `
+            crates/mic-migrator/tests/fixtures/album-mic.mdb --migrar $env:TEMP\album.micdb

@@ -52,6 +52,11 @@ jobs:
       - name: Dependencias del frontend
         run: npm ci
 
+      # Migración de Access probada en la MISMA plataforma del instalador
+      # (incluido Windows real) con un álbum del esquema MIC clásico.
+      - name: Probar migración de Access (esquema MIC real)
+        run: cargo test -p mic-migrator --test integracion -- --nocapture
+
       - name: Compilar instaladores (tauri build)
         run: npm run tauri build -- ${{ matrix.args }}
 
