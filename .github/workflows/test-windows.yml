@@ -29,3 +29,27 @@ jobs:
         run: |
           cargo run -p mic-migrator --bin mic-inspect -- `
             crates/mic-migrator/tests/fixtures/album-mic.mdb --migrar $env:TEMP\album.micdb
+
+      # El MIC clásico crea sus álbumes en formato Jet 3.0 (dbVersion30 del
+      # VB6, frmnewp.frm:240). Aquí se fabrica uno IGUAL con el motor Jet real
+      # de Microsoft (msjet40, componente de Windows, solo 32 bits) y se pasa
+      # por el migrador. Si jetdb tropieza con Jet3+acentos, aquí se ve.
+      - name: Crear álbum Jet 3.x con el motor Jet real (32-bit)
+        shell: pwsh
+        run: |
+          & "C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" `
+            -ExecutionPolicy Bypass -File scripts/crear-jet3.ps1
+
+      - name: Arnés mic-inspect sobre el álbum Jet 3.x
+        shell: pwsh
+        run: |
+          cargo run -p mic-migrator --bin mic-inspect -- `
+            mic-jet3.mdb --migrar $env:TEMP\album-jet3.micdb
+
+      # El álbum Jet3 fabricado se sube como artifact para poder probarlo
+      # también en Mac y convertirlo en fixture permanente.
+      - name: Subir álbum Jet 3.x
+        uses: actions/upload-artifact@v4
+        with:
+          name: mic-jet3
+          path: mic-jet3.mdb
