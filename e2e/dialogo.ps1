@@ -29,66 +29,69 @@ function Anota([string]$m) {
 }
 
 $AE = [System.Windows.Automation.AutomationElement]
-$fin = (Get-Date).AddSeconds($Plazo)
-Anota "esperando el selector nativo (ruta: $Ruta)"
-$hwnd = [IntPtr]::Zero
-while ((Get-Date) -lt $fin) {
-    $hwnd = [W32]::FindWindow("#32770", [NullString]::Value)
-    if ($hwnd -ne [IntPtr]::Zero -and [W32]::IsWindowVisible($hwnd)) { break }
-    $hwnd = [IntPtr]::Zero
-    Start-Sleep -Milliseconds 250
-}
-if ($hwnd -eq [IntPtr]::Zero) { Anota "ERROR: el selector nunca apareció"; exit 2 }
-Anota "selector encontrado: hwnd=$hwnd"
-Start-Sleep -Milliseconds 800
+$CTE = [System.Windows.Automation.ControlType]::Edit
 
-$dlg = $AE::FromHandle($hwnd)
-Anota ("título del selector: '{0}'" -f $dlg.Current.Name)
+# Selector visible (clase #32770) o IntPtr.Zero.
+function Selector {
+    $h = [W32]::FindWindow("#32770", [NullString]::Value)
+    if ($h -ne [IntPtr]::Zero -and [W32]::IsWindowVisible($h)) { return $h }
+    return [IntPtr]::Zero
+}
 
 # Cuadro del nombre de archivo: en "Abrir" es el Edit 1148 (dentro de un
-# combo); en "Guardar" es el Edit 1001. Ambos se llaman "File name:" /
-# "Nombre de archivo:". Se elige el primero que cumpla cualquiera de las dos.
-$edit = $null
-for ($i = 0; $i -lt 20 -and $null -eq $edit; $i++) {
+# combo); en "Guardar" es el Edit 1001. Se llaman "File name:"/"Nombre de
+# archivo:". Si el selector aún se está construyendo, no aparece todavía.
+function CuadroNombre($dlg) {
     $edits = $dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)))
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CTE)))
     foreach ($e in $edits) {
         $id = $e.Current.AutomationId; $nm = $e.Current.Name
-        if ($i -eq 0) { Anota "  edit: id='$id' nombre='$nm'" }
-        if ($null -eq $edit -and ($id -in @("1148", "1001") -or $nm -like "File name*" -or $nm -like "Nombre*")) { $edit = $e }
+        if ($id -in @("1148", "1001") -or $nm -like "File name*" -or $nm -like "Nombre de archivo*") { return $e }
     }
-    if ($null -eq $edit) { Start-Sleep -Milliseconds 250 }
-}
-if ($null -ne $edit) {
-    $edit.SetFocus()
-    $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Ruta)
-    Anota ("ruta escrita en el edit id='{0}'" -f $edit.Current.AutomationId)
-    $condBtn = New-Object System.Windows.Automation.AndCondition(
-        (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, "1")),
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))
-    )
-    $btn = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condBtn)
-    if ($null -ne $btn) {
-        $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-        Anota ("botón '{0}' invocado" -f $btn.Current.Name)
-    } else {
-        Anota "sin botón id=1: se envía Enter"
-        [W32]::SetForegroundWindow($hwnd) | Out-Null
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
-    }
-} else {
-    Anota "sin cuadro de nombre: se teclea la ruta + Enter"
-    [W32]::SetForegroundWindow($hwnd) | Out-Null
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.SendKeys]::SendWait($Ruta)
-    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+    return $null
 }
 
-# ¿Se cerró el selector?
-$cerro = $false
-for ($i = 0; $i -lt 40; $i++) {
-    Start-Sleep -Milliseconds 250
-    if (-not [W32]::IsWindowVisible($hwnd)) { $cerro = $true; break }
+# Bucle: mientras haya un selector visible, intenta escribir la ruta y pulsar
+# el botón principal (id 1). Windows puede reconstruir el selector al abrirlo,
+# así que cada intento vuelve a buscar la ventana.
+Anota "esperando el selector nativo (ruta: $Ruta)"
+$fin = (Get-Date).AddSeconds($Plazo)
+$visto = $false
+$hecho = $false
+while ((Get-Date) -lt $fin) {
+    $hwnd = Selector
+    if ($hwnd -eq [IntPtr]::Zero) {
+        if ($visto) { $hecho = $true; break }
+        Start-Sleep -Milliseconds 250
+        continue
+    }
+    try {
+        $dlg = $AE::FromHandle($hwnd)
+        $edit = CuadroNombre $dlg
+        if ($null -eq $edit) { Start-Sleep -Milliseconds 300; continue }
+        if (-not $visto) { Anota ("selector listo: hwnd=$hwnd título='{0}'" -f $dlg.Current.Name) }
+        $visto = $true
+        $edit.SetFocus()
+        $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Ruta)
+        Anota ("ruta escrita en el edit id='{0}'" -f $edit.Current.AutomationId)
+        $condBtn = New-Object System.Windows.Automation.AndCondition(
+            (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, "1")),
+            (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))
+        )
+        $btn = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condBtn)
+        if ($null -ne $btn) {
+            $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Anota ("botón '{0}' invocado" -f $btn.Current.Name)
+        } else {
+            Anota "sin botón id=1: se envía Enter"
+            [W32]::SetForegroundWindow($hwnd) | Out-Null
+            Add-Type -AssemblyName System.Windows.Forms
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+        }
+    } catch {
+        Anota "reintento tras error UIA: $_"
+    }
+    Start-Sleep -Milliseconds 1500
 }
-Anota ("selector cerrado: {0}" -f $cerro)
+Anota ("selector cerrado: {0}" -f $hecho)
+if (-not $hecho) { exit 2 }
