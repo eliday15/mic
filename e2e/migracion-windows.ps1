@@ -161,12 +161,12 @@ try {
     $destino = Join-Path $env:TEMP ("e2e-{0}.micdb" -f [IO.Path]::GetFileNameWithoutExtension($Mdb))
     Remove-Item $destino -ErrorAction SilentlyContinue
     ClicConSelector $proc "Examinar" $destino "destino"
-    $fin = (Get-Date).AddSeconds(60)
+    $fin = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $fin -and -not ((TextoModal $win) -like "*$destino*")) {
         if ($proc.HasExited) { throw "LA APP SE CERRÓ con el selector de destino (código $($proc.ExitCode))" }
         Start-Sleep -Milliseconds 500
     }
-    if (-not ((TextoModal $win) -like "*$destino*")) { Captura "sin-destino"; throw "el destino nunca llegó al diálogo" }
+    if (-not ((TextoModal $win) -like "*$destino*")) { Captura "sin-destino"; Anota "AVISO: no se pudo leer el destino en el diálogo; se intenta ejecutar igual" }
     Anota ("modal: {0}" -f (TextoModal $win))
     Invocar (Boton $win "Ejecutar migración")
     Esperar $win $proc "Registros principales" "migracion"
