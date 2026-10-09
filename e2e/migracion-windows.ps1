@@ -64,15 +64,30 @@ function Invocar($el) {
 
 # Texto visible del diálogo modal (role=dialog → ControlType Window/Pane con nombre).
 function TextoModal($raiz) {
-    $condDlg = New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, "Importar desde Access")
-    $dlg = $raiz.FindFirst($TS::Descendants, $condDlg)
-    if ($null -eq $dlg) { return "(sin modal)" }
-    $nombres = @()
-    foreach ($e in $dlg.FindAll($TS::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
-        $nm = $e.Current.Name
-        if ($nm -and $nombres[-1] -ne $nm) { $nombres += $nm }
+    # UIA entre procesos puede fallar de forma transitoria mientras hay un
+    # selector modal abierto: se reintenta en vez de abortar la prueba.
+    for ($i = 0; $i -lt 5; $i++) {
+        try {
+            $condDlg = New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, "Importar desde Access")
+            $dlg = $raiz.FindFirst($TS::Descendants, $condDlg)
+            if ($null -eq $dlg) { return "(sin modal)" }
+            $nombres = @()
+            foreach ($e in $dlg.FindAll($TS::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+                $nm = $e.Current.Name
+                if ($e.Current.ControlType -eq $CT::Edit) {
+                    $vp = $null
+                    if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
+                        $nm = "$nm=[$($vp.Current.Value)]"
+                    }
+                }
+                if ($nm -and $nombres[-1] -ne $nm) { $nombres += $nm }
+            }
+            return ($nombres -join " | ")
+        } catch {
+            Start-Sleep -Milliseconds 500
+        }
     }
-    return ($nombres -join " | ")
+    return "(UIA no respondió)"
 }
 
 $bitacora = Join-Path $env:TEMP "mic-migracion.log"
@@ -147,7 +162,11 @@ try {
     Remove-Item $destino -ErrorAction SilentlyContinue
     ClicConSelector $proc "Examinar" $destino "destino"
     $fin = (Get-Date).AddSeconds(60)
-    while ((Get-Date) -lt $fin -and -not ((TextoModal $win) -like "*$destino*")) { Start-Sleep -Milliseconds 500 }
+    while ((Get-Date) -lt $fin -and -not ((TextoModal $win) -like "*$destino*")) {
+        if ($proc.HasExited) { throw "LA APP SE CERRÓ con el selector de destino (código $($proc.ExitCode))" }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not ((TextoModal $win) -like "*$destino*")) { Captura "sin-destino"; throw "el destino nunca llegó al diálogo" }
     Anota ("modal: {0}" -f (TextoModal $win))
     Invocar (Boton $win "Ejecutar migración")
     Esperar $win $proc "Registros principales" "migracion"

@@ -17,6 +17,8 @@ public static class W32 {
     public static extern IntPtr FindWindow(string cls, string title);
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr h);
 }
 "@
 
@@ -32,7 +34,8 @@ Anota "esperando el selector nativo (ruta: $Ruta)"
 $hwnd = [IntPtr]::Zero
 while ((Get-Date) -lt $fin) {
     $hwnd = [W32]::FindWindow("#32770", [NullString]::Value)
-    if ($hwnd -ne [IntPtr]::Zero) { break }
+    if ($hwnd -ne [IntPtr]::Zero -and [W32]::IsWindowVisible($hwnd)) { break }
+    $hwnd = [IntPtr]::Zero
     Start-Sleep -Milliseconds 250
 }
 if ($hwnd -eq [IntPtr]::Zero) { Anota "ERROR: el selector nunca apareció"; exit 2 }
@@ -42,33 +45,40 @@ Start-Sleep -Milliseconds 800
 $dlg = $AE::FromHandle($hwnd)
 Anota ("título del selector: '{0}'" -f $dlg.Current.Name)
 
-# Cuadro "Nombre de archivo": AutomationId 1148 (combo) → su Edit interno.
-$condEdit = New-Object System.Windows.Automation.AndCondition(
-    (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, "1148")),
-    (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit))
-)
-$edit = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condEdit)
+# Cuadro del nombre de archivo: en "Abrir" es el Edit 1148 (dentro de un
+# combo); en "Guardar" es el Edit 1001. Ambos se llaman "File name:" /
+# "Nombre de archivo:". Se elige el primero que cumpla cualquiera de las dos.
+$edit = $null
+for ($i = 0; $i -lt 20 -and $null -eq $edit; $i++) {
+    $edits = $dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)))
+    foreach ($e in $edits) {
+        $id = $e.Current.AutomationId; $nm = $e.Current.Name
+        if ($i -eq 0) { Anota "  edit: id='$id' nombre='$nm'" }
+        if ($null -eq $edit -and ($id -in @("1148", "1001") -or $nm -like "File name*" -or $nm -like "Nombre*")) { $edit = $e }
+    }
+    if ($null -eq $edit) { Start-Sleep -Milliseconds 250 }
+}
 if ($null -ne $edit) {
-    $vp = $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-    $vp.SetValue($Ruta)
-    Anota "ruta escrita con ValuePattern"
+    $edit.SetFocus()
+    $edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($Ruta)
+    Anota ("ruta escrita en el edit id='{0}'" -f $edit.Current.AutomationId)
     $condBtn = New-Object System.Windows.Automation.AndCondition(
         (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, "1")),
         (New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button))
     )
     $btn = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condBtn)
     if ($null -ne $btn) {
-        $ip = $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-        $ip.Invoke()
-        Anota "botón Abrir invocado"
+        $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        Anota ("botón '{0}' invocado" -f $btn.Current.Name)
     } else {
-        Anota "sin botón Abrir: se envía Enter"
+        Anota "sin botón id=1: se envía Enter"
         [W32]::SetForegroundWindow($hwnd) | Out-Null
         Add-Type -AssemblyName System.Windows.Forms
         [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
     }
 } else {
-    Anota "sin cuadro 1148: se teclea la ruta + Enter"
+    Anota "sin cuadro de nombre: se teclea la ruta + Enter"
     [W32]::SetForegroundWindow($hwnd) | Out-Null
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.SendKeys]::SendWait($Ruta)
@@ -79,6 +89,6 @@ if ($null -ne $edit) {
 $cerro = $false
 for ($i = 0; $i -lt 40; $i++) {
     Start-Sleep -Milliseconds 250
-    if ([W32]::FindWindow("#32770", [NullString]::Value) -eq [IntPtr]::Zero) { $cerro = $true; break }
+    if (-not [W32]::IsWindowVisible($hwnd)) { $cerro = $true; break }
 }
 Anota ("selector cerrado: {0}" -f $cerro)
