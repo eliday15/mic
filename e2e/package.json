@@ -1,0 +1,9 @@
+{
+  "name": "mic-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Prueba E2E de la app MIC real en Windows (tauri-driver + WebView2).",
+  "dependencies": {
+    "selenium-webdriver": "4.27.0"
+  }
+}

@@ -1,0 +1,85 @@
+name: E2E importación Access (Windows)
+
+# Ejecuta la app MIC REAL (el mismo .exe de release) en Windows y recorre
+# "Importar desde Access…" de punta a punta: botón → selector nativo →
+# inspección. Es la única prueba que cubre la capa Tauri/WebView2/diálogo,
+# donde vive el cuelgue que los tests del migrador no ven.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["e2e/**", "fix/**"]
+
+jobs:
+  e2e:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Dependencias
+        run: |
+          npm ci
+          npm ci --prefix e2e || npm install --prefix e2e
+
+      - name: Compilar la app (release, sin instalador)
+        run: npx tauri build --no-bundle
+
+      - name: tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: msedgedriver de la misma versión que WebView2
+        shell: pwsh
+        run: |
+          $k = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $ver = (Get-ItemProperty $k).pv
+          Write-Output "WebView2 $ver"
+          Invoke-WebRequest "https://msedgedriver.microsoft.com/$ver/edgedriver_win64.zip" -OutFile edgedriver.zip
+          Expand-Archive edgedriver.zip -DestinationPath edgedriver
+          Get-ChildItem edgedriver
+
+      - name: Prueba E2E (álbum Jet 4)
+        shell: pwsh
+        run: |
+          $drv = Start-Process tauri-driver -ArgumentList '--native-driver', "$pwd\edgedriver\msedgedriver.exe" `
+            -PassThru -RedirectStandardOutput tauri-driver.out -RedirectStandardError tauri-driver.err
+          Start-Sleep 3
+          node e2e/migracion-windows.mjs "$pwd\target\release\mic-tauri.exe" `
+            "$pwd\crates\mic-migrator\tests\fixtures\album-mic.mdb" "$pwd\e2e-salida\jet4"
+          $code = $LASTEXITCODE
+          Stop-Process -Id $drv.Id -Force -ErrorAction SilentlyContinue
+          Get-Process mic-tauri -ErrorAction SilentlyContinue | Stop-Process -Force
+          exit $code
+
+      - name: Prueba E2E (álbum Jet 3, formato del MIC clásico)
+        if: always()
+        shell: pwsh
+        run: |
+          $drv = Start-Process tauri-driver -ArgumentList '--native-driver', "$pwd\edgedriver\msedgedriver.exe" `
+            -PassThru -RedirectStandardOutput tauri-driver3.out -RedirectStandardError tauri-driver3.err
+          Start-Sleep 3
+          node e2e/migracion-windows.mjs "$pwd\target\release\mic-tauri.exe" `
+            "$pwd\crates\mic-migrator\tests\fixtures\album-mic-jet3.mdb" "$pwd\e2e-salida\jet3"
+          $code = $LASTEXITCODE
+          Stop-Process -Id $drv.Id -Force -ErrorAction SilentlyContinue
+          Get-Process mic-tauri -ErrorAction SilentlyContinue | Stop-Process -Force
+          exit $code
+
+      - name: Subir evidencias
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-windows
+          path: |
+            e2e-salida
+            tauri-driver*.out
+            tauri-driver*.err
