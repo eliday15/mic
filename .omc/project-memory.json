@@ -138,6 +138,12 @@
       "accessCount": 1,
       "lastAccessed": 1791567601542,
       "type": "file"
+    },
+    {
+      "path": "e2e/migracion-windows.ps1",
+      "accessCount": 1,
+      "lastAccessed": 1791570124205,
+      "type": "file"
     }
   ],
   "userDirectives": []

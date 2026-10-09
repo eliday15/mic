@@ -31,7 +31,7 @@ $fin = (Get-Date).AddSeconds($Plazo)
 Anota "esperando el selector nativo (ruta: $Ruta)"
 $hwnd = [IntPtr]::Zero
 while ((Get-Date) -lt $fin) {
-    $hwnd = [W32]::FindWindow("#32770", $null)
+    $hwnd = [W32]::FindWindow("#32770", [NullString]::Value)
     if ($hwnd -ne [IntPtr]::Zero) { break }
     Start-Sleep -Milliseconds 250
 }
@@ -79,6 +79,6 @@ if ($null -ne $edit) {
 $cerro = $false
 for ($i = 0; $i -lt 40; $i++) {
     Start-Sleep -Milliseconds 250
-    if ([W32]::FindWindow("#32770", $null) -eq [IntPtr]::Zero) { $cerro = $true; break }
+    if ([W32]::FindWindow("#32770", [NullString]::Value) -eq [IntPtr]::Zero) { $cerro = $true; break }
 }
 Anota ("selector cerrado: {0}" -f $cerro)
