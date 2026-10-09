@@ -29,17 +29,15 @@ jobs:
       - name: Dependencias
         run: |
           npm ci
-          npm ci --prefix e2e || npm install --prefix e2e
 
       - name: Compilar la app (release, sin instalador)
-        # devtools: WebView2 solo abre el puerto CDP si las DevTools están habilitadas.
-        run: npx tauri build --no-bundle -- --features tauri/devtools
+        run: npx tauri build --no-bundle
 
       - name: Prueba E2E (álbum Jet 4)
         shell: pwsh
         run: |
-          node e2e/migracion-windows.mjs "$pwd\target\release\mic-tauri.exe" `
-            "$pwd\crates\mic-migrator\tests\fixtures\album-mic.mdb" "$pwd\e2e-salida\jet4"
+          ./e2e/migracion-windows.ps1 -App "$pwd\target\release\mic-tauri.exe" `
+            -Mdb "$pwd\crates\mic-migrator\tests\fixtures\album-mic.mdb" -Salida "$pwd\e2e-salida\jet4"
           $code = $LASTEXITCODE
           Get-Process mic-tauri -ErrorAction SilentlyContinue | Stop-Process -Force
           exit $code
@@ -48,8 +46,8 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          node e2e/migracion-windows.mjs "$pwd\target\release\mic-tauri.exe" `
-            "$pwd\crates\mic-migrator\tests\fixtures\album-mic-jet3.mdb" "$pwd\e2e-salida\jet3"
+          ./e2e/migracion-windows.ps1 -App "$pwd\target\release\mic-tauri.exe" `
+            -Mdb "$pwd\crates\mic-migrator\tests\fixtures\album-mic-jet3.mdb" -Salida "$pwd\e2e-salida\jet3"
           $code = $LASTEXITCODE
           Get-Process mic-tauri -ErrorAction SilentlyContinue | Stop-Process -Force
           exit $code

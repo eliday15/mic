@@ -1,9 +1,0 @@
-{
-  "name": "mic-e2e",
-  "private": true,
-  "type": "module",
-  "description": "Prueba E2E de la app MIC real en Windows (WebView2 vía CDP).",
-  "dependencies": {
-    "playwright-core": "1.49.1"
-  }
-}
