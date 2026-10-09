@@ -106,7 +106,7 @@ fn migra_album_mic_jet3_completo() {
     assert!(insp.tiene_variantes);
     assert_eq!(insp.campos.len(), 9, "campos: {:?}", insp.campos);
     assert!(
-        insp.campos.iter().any(|(n, _)| n == "Descripción"),
+        insp.campos.iter().any(|c| c.nombre == "Descripción"),
         "columna acentuada intacta en Jet3: {:?}",
         insp.campos
     );
@@ -119,4 +119,27 @@ fn migra_album_mic_jet3_completo() {
     assert_eq!(rep.filas_variantes, 24);
     assert_eq!(rep.filas_multidatos, 40);
     assert!(rep.advertencias.is_empty(), "{:?}", rep.advertencias);
+}
+
+/// Contrato con el frontend (CONTRACT.md: `campos: {nombre,tipo}[]`).
+///
+/// Regresión del cuelgue de "Importar desde Access": `campos` salía como
+/// tuplas JSON (`[["Clave","texto"]]`), el diálogo no encontraba `c.nombre` y
+/// Svelte abortaba el render dejando la interfaz en "Cargando" para siempre.
+#[test]
+fn inspeccion_serializa_campos_como_objetos() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/album-mic.mdb");
+    let insp = mic_migrator::inspeccionar(&fixture).expect("inspeccionar");
+    let json = serde_json::to_value(&insp).expect("serializar");
+
+    let campos = json["campos"].as_array().expect("campos es arreglo");
+    assert!(!campos.is_empty());
+    for c in campos {
+        assert!(c.is_object(), "cada campo debe ser objeto {{nombre,tipo}}: {c}");
+        assert!(c["nombre"].is_string() && c["tipo"].is_string(), "{c}");
+    }
+    assert_eq!(campos[0]["nombre"], "Clave");
+    assert!(json["totalEstimado"].is_u64());
+    assert!(json["tieneVariantes"].is_boolean());
 }

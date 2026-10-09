@@ -2,8 +2,9 @@
 # operada SOLO con UI Automation (el árbol accesible de WebView2): el mismo .exe
 # de release que recibe el usuario, sin DevTools ni drivers.
 #
-# Recorre: bienvenida → "Importar desde Access…" → "Examinar…" → selector
-# nativo (dialogo.ps1) → espera a que la inspección termine o falle. Deja
+# Recorre la importación COMPLETA: bienvenida → "Importar desde Access…" →
+# selector nativo del .mdb (dialogo.ps1) → inspección → selector de destino →
+# migración → reporte → abrir el álbum. Deja
 # capturas del escritorio, el texto del diálogo cada segundo, la salida del
 # backend y la bitácora %TEMP%\mic-migracion.log en la carpeta de salida.
 param(
@@ -84,6 +85,49 @@ $proc = Start-Process -FilePath $App -PassThru `
     -RedirectStandardOutput (Join-Path $Salida "backend.out") `
     -RedirectStandardError (Join-Path $Salida "backend.err")
 
+# Invoca un botón que abre un selector NATIVO y lo opera con dialogo.ps1.
+# El Invoke va en un hilo aparte: puede no volver mientras el selector modal
+# está abierto.
+function ClicConSelector($proc, [string]$boton, [string]$ruta, [string]$etq) {
+    Start-Process pwsh -NoNewWindow -ArgumentList "-NoProfile", "-File", (Join-Path $aqui "dialogo.ps1"), `
+        "-Ruta", "`"$ruta`"", "-Log", (Join-Path $Salida "dialogo-$etq.log") | Out-Null
+    Anota "invocando '$boton' (selector: $ruta)"
+    Start-ThreadJob -ScriptBlock {
+        param($h, $texto)
+        Add-Type -AssemblyName UIAutomationClient
+        $el = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$h)
+        $c = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::Button)
+        foreach ($b in $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, $c)) {
+            if ($b.Current.Name -like "*$texto*") {
+                $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+                return "invocado"
+            }
+        }
+        return "no encontrado"
+    } -ArgumentList $proc.MainWindowHandle.ToInt64(), $boton | Out-Null
+}
+
+# Espera a que el texto del diálogo contenga $exito (→ $true) o un error
+# visible (→ excepción). Captura el escritorio cada 20 s mientras espera.
+function Esperar($win, $proc, [string]$exito, [string]$etq, [int]$plazo = $PlazoInspeccion) {
+    $fin = (Get-Date).AddSeconds($plazo)
+    $ultimo = ""
+    $siguienteCaptura = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $fin) {
+        if ($proc.HasExited) { throw "LA APP SE CERRÓ (código $($proc.ExitCode))" }
+        try { $txt = TextoModal $win } catch { $txt = "(UIA no respondió: $_)" }
+        if ($txt -ne $ultimo) { Anota "modal: $txt"; $ultimo = $txt }
+        if ($txt -like "*$exito*") { Captura "ok-$etq"; return }
+        if ($txt -match "no se pudo|tardó más|Error") { Captura "error-$etq"; throw "error visible en '$etq': $txt" }
+        if ((Get-Date) -gt $siguienteCaptura) { Captura "esperando-$etq"; $siguienteCaptura = (Get-Date).AddSeconds(20) }
+        Start-Sleep -Seconds 1
+    }
+    Captura "colgado-$etq"
+    throw "COLGADO en '$etq': la interfaz nunca mostró '$exito' en $plazo s (último: $ultimo)"
+}
+
 $resultado = "desconocido"
 try {
     $win = Ventana $proc
@@ -91,47 +135,42 @@ try {
     $imp = Boton $win "Importar desde Access"
     Anota "app lista; invocando 'Importar desde Access…'"
     Invocar $imp
-
-    $exa = Boton $win "Examinar"
+    Boton $win "Examinar" | Out-Null
     Captura "dialogo-abierto"
+
+    # 1) Elegir el .mdb → inspección.
+    ClicConSelector $proc "Examinar" $Mdb "origen"
+    Esperar $win $proc "Registros estimados" "inspeccion"
+
+    # 2) Elegir destino (selector de guardar) → ejecutar migración.
+    $destino = Join-Path $env:TEMP ("e2e-{0}.micdb" -f [IO.Path]::GetFileNameWithoutExtension($Mdb))
+    Remove-Item $destino -ErrorAction SilentlyContinue
+    ClicConSelector $proc "Examinar" $destino "destino"
+    $fin = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $fin -and -not ((TextoModal $win) -like "*$destino*")) { Start-Sleep -Milliseconds 500 }
     Anota ("modal: {0}" -f (TextoModal $win))
+    Invocar (Boton $win "Ejecutar migración")
+    Esperar $win $proc "Registros principales" "migracion"
+    if (-not (Test-Path $destino)) { throw "la migración dijo éxito pero no existe $destino" }
+    Anota ("álbum creado: {0} ({1:N0} bytes)" -f $destino, (Get-Item $destino).Length)
 
-    # El selector nativo lo opera otro proceso: Invoke puede no volver mientras
-    # el selector modal está abierto.
-    $helper = Start-Process pwsh -PassThru -NoNewWindow `
-        -ArgumentList "-NoProfile", "-File", (Join-Path $aqui "dialogo.ps1"), "-Ruta", "`"$Mdb`"", "-Log", (Join-Path $Salida "dialogo.log")
-    Anota "invocando 'Examinar…'"
-    $job = Start-ThreadJob -ScriptBlock {
-        param($h)
-        Add-Type -AssemblyName UIAutomationClient
-        $el = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$h)
-        $c = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::Button)
-        foreach ($b in $el.FindAll([System.Windows.Automation.TreeScope]::Descendants, $c)) {
-            if ($b.Current.Name -like "*Examinar*") {
-                $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-                return "invocado"
-            }
-        }
-        return "no encontrado"
-    } -ArgumentList $proc.MainWindowHandle.ToInt64()
-
-    $fin = (Get-Date).AddSeconds($PlazoInspeccion)
-    $ultimo = ""
-    $siguienteCaptura = (Get-Date).AddSeconds(5)
+    # 3) Abrir el álbum migrado: el diálogo se cierra y la bienvenida desaparece.
+    $condBtn = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::Button)
+    $abrir = $null
+    foreach ($b in $win.FindAll($TS::Descendants, $condBtn)) { if ($b.Current.Name -eq "Abrir") { $abrir = $b } }
+    if ($null -eq $abrir) { throw "no apareció el botón 'Abrir' del reporte" }
+    Invocar $abrir
+    $fin = (Get-Date).AddSeconds(60)
+    $abierto = $false
     while ((Get-Date) -lt $fin) {
-        if ($proc.HasExited) { $resultado = "LA APP SE CERRÓ (código $($proc.ExitCode))"; break }
-        try { $txt = TextoModal $win } catch { $txt = "(UIA no respondió: $_)" }
-        if ($txt -ne $ultimo) { Anota "modal: $txt"; $ultimo = $txt }
-        if ($txt -like "*Registros estimados*") { $resultado = "exito"; break }
-        if ($txt -match "no se pudo|tardó más|error|Error") { $resultado = "error-visible"; break }
-        if ((Get-Date) -gt $siguienteCaptura) { Captura "esperando"; $siguienteCaptura = (Get-Date).AddSeconds(20) }
-        Start-Sleep -Seconds 1
+        $bienvenida = $false
+        foreach ($b in $win.FindAll($TS::Descendants, $condBtn)) { if ($b.Current.Name -like "*Importar desde Access*") { $bienvenida = $true } }
+        if ((TextoModal $win) -eq "(sin modal)" -and -not $bienvenida) { $abierto = $true; break }
+        Start-Sleep -Milliseconds 500
     }
-    if ($resultado -eq "desconocido") { $resultado = "COLGADO" }
-    Anota ("job Examinar: {0} / {1}" -f $job.State, (Receive-Job $job -ErrorAction SilentlyContinue))
-    Captura "final"
+    Captura "album-abierto"
+    if (-not $abierto) { throw "el álbum migrado no se abrió" }
+    $resultado = "exito"
 } catch {
     $resultado = "fallo-prueba: $_"
     Captura "fallo-prueba"

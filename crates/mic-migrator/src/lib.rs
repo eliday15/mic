@@ -12,5 +12,5 @@ pub mod paths;
 pub mod type_map;
 
 pub use migrar::{
-    inspeccionar, migrar, parse_xms, MdbInspeccion, MigracionReporte, ProgresoMigracion,
+    inspeccionar, migrar, parse_xms, CampoMdb, MdbInspeccion, MigracionReporte, ProgresoMigracion,
 };
