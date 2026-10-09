@@ -32,7 +32,8 @@ jobs:
           npm ci --prefix e2e || npm install --prefix e2e
 
       - name: Compilar la app (release, sin instalador)
-        run: npx tauri build --no-bundle
+        # devtools: WebView2 solo abre el puerto CDP si las DevTools están habilitadas.
+        run: npx tauri build --no-bundle -- --features tauri/devtools
 
       - name: Prueba E2E (álbum Jet 4)
         shell: pwsh
