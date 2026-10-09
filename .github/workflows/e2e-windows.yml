@@ -34,29 +34,12 @@ jobs:
       - name: Compilar la app (release, sin instalador)
         run: npx tauri build --no-bundle
 
-      - name: tauri-driver
-        run: cargo install tauri-driver --locked
-
-      - name: msedgedriver de la misma versión que WebView2
-        shell: pwsh
-        run: |
-          $k = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
-          $ver = (Get-ItemProperty $k).pv
-          Write-Output "WebView2 $ver"
-          Invoke-WebRequest "https://msedgedriver.microsoft.com/$ver/edgedriver_win64.zip" -OutFile edgedriver.zip
-          Expand-Archive edgedriver.zip -DestinationPath edgedriver
-          Get-ChildItem edgedriver
-
       - name: Prueba E2E (álbum Jet 4)
         shell: pwsh
         run: |
-          $drv = Start-Process tauri-driver -ArgumentList '--native-driver', "$pwd\edgedriver\msedgedriver.exe" `
-            -PassThru -RedirectStandardOutput tauri-driver.out -RedirectStandardError tauri-driver.err
-          Start-Sleep 3
           node e2e/migracion-windows.mjs "$pwd\target\release\mic-tauri.exe" `
             "$pwd\crates\mic-migrator\tests\fixtures\album-mic.mdb" "$pwd\e2e-salida\jet4"
           $code = $LASTEXITCODE
-          Stop-Process -Id $drv.Id -Force -ErrorAction SilentlyContinue
           Get-Process mic-tauri -ErrorAction SilentlyContinue | Stop-Process -Force
           exit $code
 
@@ -64,13 +47,9 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          $drv = Start-Process tauri-driver -ArgumentList '--native-driver', "$pwd\edgedriver\msedgedriver.exe" `
-            -PassThru -RedirectStandardOutput tauri-driver3.out -RedirectStandardError tauri-driver3.err
-          Start-Sleep 3
           node e2e/migracion-windows.mjs "$pwd\target\release\mic-tauri.exe" `
             "$pwd\crates\mic-migrator\tests\fixtures\album-mic-jet3.mdb" "$pwd\e2e-salida\jet3"
           $code = $LASTEXITCODE
-          Stop-Process -Id $drv.Id -Force -ErrorAction SilentlyContinue
           Get-Process mic-tauri -ErrorAction SilentlyContinue | Stop-Process -Force
           exit $code
 
@@ -79,7 +58,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-windows
-          path: |
-            e2e-salida
-            tauri-driver*.out
-            tauri-driver*.err
+          path: e2e-salida
