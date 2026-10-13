@@ -41,12 +41,27 @@ use crate::type_map::{self, parse_numero};
 pub struct MdbInspeccion {
     /// Nombres de las tablas presentes en el `.mdb`.
     pub tablas: Vec<String>,
-    /// Campos de usuario detectados: `(nombre, tipo legible)`.
-    pub campos: Vec<(String, String)>,
+    /// Campos de usuario detectados.
+    pub campos: Vec<CampoMdb>,
     /// Número estimado de registros en `Principal`.
     pub total_estimado: u64,
     /// `true` si hay tabla `Variantes` con filas.
     pub tiene_variantes: bool,
+}
+
+/// Campo de usuario detectado en el `.mdb` (contrato: `{ nombre, tipo }`).
+///
+/// Debe serializarse como OBJETO: el diálogo indexa `{#each … (c.nombre)}`.
+/// Con la tupla `(String, String)` de antes llegaba como `["Clave","texto"]`,
+/// todas las claves del `each` eran `undefined` y Svelte abortaba el render:
+/// la interfaz se quedaba en "Cargando" para siempre aunque la inspección
+/// hubiera terminado bien (el cuelgue de "Importar desde Access" en v3.0.x).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CampoMdb {
+    /// Nombre del campo tal como está en `propiedades`.
+    pub nombre: String,
+    /// Tipo legible (`texto`, `numérico`, `moneda`, …).
+    pub tipo: String,
 }
 
 /// Reporte del resultado de una migración.
@@ -204,7 +219,10 @@ pub fn inspeccionar(ruta_mdb: &Path) -> Result<MdbInspeccion, MicError> {
         let props = jet::leer_tabla(ruta_mdb, nom)?.csv;
         type_map::mapear_campos(&props)
             .into_iter()
-            .map(|c| (c.def.nombre, tipo_legible(c.def.tipo).to_string()))
+            .map(|c| CampoMdb {
+                nombre: c.def.nombre,
+                tipo: tipo_legible(c.def.tipo).to_string(),
+            })
             .collect()
     } else {
         Vec::new()

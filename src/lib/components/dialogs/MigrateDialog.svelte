@@ -232,7 +232,7 @@
       </div>
 
       <div class="mg__campos">
-        {#each inspeccion.campos as c (c.nombre)}
+        {#each inspeccion.campos as c}
           <span class="mg__chip">{c.nombre} · {c.tipo}</span>
         {/each}
       </div>
@@ -286,7 +286,7 @@
         <div class="mg__avisos">
           <span class="mg__etq">{t.migracion.reporte.advertencias}</span>
           <ul>
-            {#each reporte.advertencias as a (a)}
+            {#each reporte.advertencias as a}
               <li>{a}</li>
             {/each}
           </ul>
