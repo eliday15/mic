@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>MIC abre y guarda tus álbumes y sus imágenes en la carpeta Documentos.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>MIC abre y guarda tus álbumes y sus imágenes en el Escritorio.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>MIC abre álbumes e imágenes desde la carpeta Descargas.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>MIC abre álbumes e imágenes guardados en discos externos.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>MIC abre álbumes e imágenes guardados en carpetas de red.</string>
+</dict>
+</plist>
