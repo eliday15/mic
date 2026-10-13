@@ -94,6 +94,16 @@ pub fn construir(
         }
     }
 
+    // Registros quitados manualmente del filtro. Viajan como un único
+    // parámetro JSON (`json_each`) para no chocar con el límite de `?` de
+    // SQLite cuando la lista es grande.
+    if !req.excluidos.is_empty() {
+        clausulas.push(format!(
+            "{alias}._id_ NOT IN (SELECT value FROM json_each(?))"
+        ));
+        params.push(SqlValue::Text(lista_json(&req.excluidos)));
+    }
+
     // Filtro rápido del panel lateral.
     if let Some(fr) = &req.filtro_rapido {
         if let Some(campo) = idx.buscar(&fr.campo) {
@@ -328,6 +338,12 @@ fn valor_para_campo(campo: &CampoDef, valor: &str) -> SqlValue {
     }
 }
 
+/// Serializa una lista de ids como arreglo JSON (`[1,2,3]`) para `json_each`.
+fn lista_json(ids: &[i64]) -> String {
+    let partes: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+    format!("[{}]", partes.join(","))
+}
+
 /// Sanea la cadena de búsqueda para FTS5: prefija cada token con comillas y le
 /// añade `*` para búsqueda por prefijo, evitando que caracteres especiales de la
 /// sintaxis FTS rompan la consulta.
@@ -341,4 +357,44 @@ fn consulta_fts(entrada: &str) -> String {
         })
         .collect();
     tokens.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mic_core::model::{CondicionFiltro, Tabla};
+
+    fn req(excluidos: Vec<i64>) -> QueryReq {
+        QueryReq {
+            tabla: Tabla::Principal,
+            id_principal: None,
+            grupo: None,
+            filtro_rapido: None,
+            condiciones: Vec::<CondicionFiltro>::new(),
+            busqueda: None,
+            orden: vec![],
+            incluir_ocultos: true,
+            excluidos,
+            offset: 0,
+            limit: 10,
+        }
+    }
+
+    #[test]
+    fn excluidos_generan_not_in_con_un_solo_parametro_json() {
+        let c = construir(&[], &req(vec![3, 15, 42]), &[]);
+        assert_eq!(
+            c.where_sql,
+            "principal._id_ NOT IN (SELECT value FROM json_each(?))"
+        );
+        assert_eq!(c.params.len(), 1);
+        assert_eq!(c.params[0], SqlValue::Text("[3,15,42]".into()));
+    }
+
+    #[test]
+    fn sin_excluidos_no_hay_clausula() {
+        let c = construir(&[], &req(vec![]), &[]);
+        assert!(c.where_sql.is_empty());
+        assert!(c.params.is_empty());
+    }
 }

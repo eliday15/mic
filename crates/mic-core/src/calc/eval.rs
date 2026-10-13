@@ -18,10 +18,28 @@
 //!   `@FECHA(arg)` (passthrough de fecha, equivalente al campo calculado con
 //!   tipo de salida Fecha del original), el resultado se reconvierte a fecha y
 //!   se devuelve como [`Valor::Texto`] en ISO `YYYY-MM-DD`.
+//! - Fechas vacías: si la fórmula usa un campo de tipo Fecha vacío (o con una
+//!   fecha ilegible), el resultado es vacío ([`Valor::Nulo`]) en vez de contar
+//!   días desde 1900 — `Fin - Inicio` sin `Inicio` no tiene sentido. Los campos
+//!   numéricos vacíos siguen valiendo 0 (semántica VB).
 
 use crate::calc::functions::{self, Funcion};
 use crate::calc::lexer::{self, TipoToken, Token};
 use crate::model::{Valor, Valores};
+use chrono::NaiveDate;
+use std::collections::HashSet;
+
+/// Contexto de evaluación que no viaja en el AST.
+pub struct Contexto<'a> {
+    /// Nombres normalizados (espacios → `_`) de los campos de tipo Fecha:
+    /// vacíos en ellos vacían el resultado en lugar de valer 0.
+    pub fechas: &'a HashSet<String>,
+    /// Fecha que devuelve `@HOY` (inyectable para pruebas deterministas).
+    pub hoy: NaiveDate,
+}
+
+/// Resultado intermedio: `None` = vacío (fecha sin valor), que se propaga.
+type Num = Result<Option<f64>, String>;
 
 /// Árbol de sintaxis abstracta de una fórmula compilada.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +58,7 @@ pub enum Ast {
         izq: Box<Ast>,
         der: Box<Ast>,
     },
-    /// Llamada a función (`@FECHA(arg)`).
+    /// Llamada a función (`@FECHA(arg)`, `@HOY`).
     Llamada { funcion: Funcion, args: Vec<Ast> },
 }
 
@@ -189,6 +207,13 @@ impl Parser {
         let funcion = functions::buscar_funcion(&nombre.texto)
             .ok_or_else(|| format!("función desconocida: '@{}'", nombre.texto))?;
 
+        // Las funciones sin argumentos admiten omitir los paréntesis (`@HOY`).
+        if funcion.aridad() == 0 && !self.es_actual("(") {
+            return Ok(Ast::Llamada {
+                funcion,
+                args: Vec::new(),
+            });
+        }
         self.esperar("(")?;
         let mut args = Vec::new();
         // El original solo admite un argumento; aceptamos lista separada por
@@ -238,60 +263,82 @@ impl Parser {
 /// El resultado es [`Valor::Numero`] salvo que la fórmula completa sea un
 /// `@FECHA(arg)` (passthrough de fecha), en cuyo caso se devuelve la fecha en
 /// ISO como [`Valor::Texto`], replicando el tipo de salida Fecha del original.
-pub fn evaluar(ast: &Ast, valores: &Valores) -> Result<Valor, String> {
+/// Si interviene una fecha vacía el resultado es [`Valor::Nulo`].
+pub fn evaluar(ast: &Ast, valores: &Valores, ctx: &Contexto) -> Result<Valor, String> {
+    let Some(n) = eval_num(ast, valores, ctx)? else {
+        return Ok(Valor::Nulo(None));
+    };
     // Caso especial: la fórmula es exactamente `@FECHA(arg)` → resultado fecha.
-    if let Ast::Llamada {
-        funcion: Funcion::Fecha,
-        args,
-    } = ast
-    {
-        let dias = eval_num(ast, valores)?;
-        let _ = args; // ya validado en parseo
-        let fecha = functions::dias_a_fecha(dias.round() as i64);
-        return Ok(Valor::Texto(functions::formato_iso(fecha)));
+    if matches!(
+        ast,
+        Ast::Llamada {
+            funcion: Funcion::Fecha,
+            ..
+        }
+    ) {
+        return Ok(dias_a_valor_fecha(n));
     }
-
-    let n = eval_num(ast, valores)?;
     Ok(Valor::Numero(n))
 }
 
-/// Evalúa un AST a número (`f64`), la moneda interna de la aritmética.
-fn eval_num(ast: &Ast, valores: &Valores) -> Result<f64, String> {
+/// `true` si el AST (fórmula ya expandida) usa `@HOY` en algún punto.
+pub fn usa_hoy(ast: &Ast) -> bool {
     match ast {
-        Ast::Numero(n) => Ok(*n),
+        Ast::Numero(_) | Ast::Campo(_) => false,
+        Ast::Unario { arg, .. } => usa_hoy(arg),
+        Ast::Binario { izq, der, .. } => usa_hoy(izq) || usa_hoy(der),
+        Ast::Llamada { funcion, args } => *funcion == Funcion::Hoy || args.iter().any(usa_hoy),
+    }
+}
 
-        Ast::Campo(nombre) => Ok(resolver_campo(nombre, valores)),
+/// Convierte un número de días desde el epoch en una fecha ISO
+/// ([`Valor::Texto`] `YYYY-MM-DD`). Las fracciones de día se redondean.
+pub fn dias_a_valor_fecha(dias: f64) -> Valor {
+    let fecha = functions::dias_a_fecha(dias.round() as i64);
+    Valor::Texto(functions::formato_iso(fecha))
+}
+
+/// Evalúa un AST a número (`f64`), la moneda interna de la aritmética.
+/// `Ok(None)` indica que intervino una fecha vacía.
+fn eval_num(ast: &Ast, valores: &Valores, ctx: &Contexto) -> Num {
+    match ast {
+        Ast::Numero(n) => Ok(Some(*n)),
+
+        Ast::Campo(nombre) => Ok(resolver_campo(nombre, valores, ctx)),
 
         Ast::Unario { op, arg } => {
-            let v = eval_num(arg, valores)?;
-            Ok(match op {
+            let Some(v) = eval_num(arg, valores, ctx)? else {
+                return Ok(None);
+            };
+            Ok(Some(match op {
                 OpUnario::Negacion => -v,
                 OpUnario::Identidad => v,
-            })
+            }))
         }
 
         Ast::Binario { op, izq, der } => {
-            let a = eval_num(izq, valores)?;
-            let b = eval_num(der, valores)?;
+            let a = eval_num(izq, valores, ctx)?;
+            let b = eval_num(der, valores, ctx)?;
+            let (Some(a), Some(b)) = (a, b) else {
+                return Ok(None);
+            };
             match op {
-                OpBinario::Suma => Ok(a + b),
-                OpBinario::Resta => Ok(a - b),
-                OpBinario::Multiplicacion => Ok(a * b),
+                OpBinario::Suma => Ok(Some(a + b)),
+                OpBinario::Resta => Ok(Some(a - b)),
+                OpBinario::Multiplicacion => Ok(Some(a * b)),
                 OpBinario::Division => {
                     if b == 0.0 {
                         Err("división por cero".to_string())
                     } else {
-                        Ok(a / b)
+                        Ok(Some(a / b))
                     }
                 }
             }
         }
 
         Ast::Llamada { funcion, args } => match funcion {
-            Funcion::Fecha => {
-                let arg = &args[0];
-                eval_fecha_a_dias(arg, valores)
-            }
+            Funcion::Fecha => eval_fecha_a_dias(&args[0], valores, ctx),
+            Funcion::Hoy => Ok(Some(functions::fecha_a_dias(ctx.hoy) as f64)),
         },
     }
 }
@@ -301,16 +348,26 @@ fn eval_num(ast: &Ast, valores: &Valores) -> Result<f64, String> {
 /// Reproduce `ScanSustVals`: un campo ausente o `Nulo` vale `0.0` (Empty de
 /// VB en aritmética); si su valor es una fecha, se reduce a su número de días
 /// desde el epoch; en otro caso se interpreta como número (texto numérico).
+/// Excepción: un campo de tipo Fecha vacío o ilegible devuelve `None` (vacío).
 ///
 /// El nombre llega normalizado (con `_`); buscamos primero por la forma con
 /// espacios (clave del mapa de `Valores`, que usa el nombre visible) y luego
 /// por la forma literal, de modo que `Precio_Venta` resuelva `"Precio Venta"`.
-fn resolver_campo(nombre_norm: &str, valores: &Valores) -> f64 {
-    let Some(valor) = buscar_valor(nombre_norm, valores) else {
+fn resolver_campo(nombre_norm: &str, valores: &Valores, ctx: &Contexto) -> Option<f64> {
+    let valor = buscar_valor(nombre_norm, valores);
+    if ctx.fechas.contains(nombre_norm) {
+        return match valor {
+            Some(Valor::Texto(s)) => {
+                functions::interpretar_fecha(s).map(|f| functions::fecha_a_dias(f) as f64)
+            }
+            _ => None,
+        };
+    }
+    let Some(valor) = valor else {
         // Campo no presente → 0.0 (Empty de VB).
-        return 0.0;
+        return Some(0.0);
     };
-    match valor {
+    Some(match valor {
         Valor::Nulo(_) => 0.0,
         Valor::Numero(n) => *n,
         Valor::Entero(n) => *n as f64,
@@ -330,33 +387,29 @@ fn resolver_campo(nombre_norm: &str, valores: &Valores) -> f64 {
                 s.trim().parse().unwrap_or(0.0)
             }
         }
-    }
+    })
 }
 
 /// Evalúa el argumento de `@FECHA`: debe ser una fecha válida, que se reduce a
 /// su número de días. Reproduce el "Uso Indebido de @FECHA" del original
 /// cuando el argumento no es una fecha.
-fn eval_fecha_a_dias(arg: &Ast, valores: &Valores) -> Result<f64, String> {
+fn eval_fecha_a_dias(arg: &Ast, valores: &Valores, ctx: &Contexto) -> Num {
     // Caso típico: @FECHA(Campo). Si el campo contiene una fecha, días.
     if let Ast::Campo(nombre_norm) = arg {
-        match buscar_valor(nombre_norm, valores) {
-            Some(Valor::Texto(s)) => {
-                if let Some(fecha) = functions::interpretar_fecha(s) {
-                    return Ok(functions::fecha_a_dias(fecha) as f64);
-                }
-                return Err(format!("uso indebido de @FECHA: '{s}' no es una fecha"));
-            }
-            // Campo ausente o nulo: el original también lo trataría como 0
-            // (Empty) tras fallar IsDate; aquí lo consideramos 0 días (epoch).
-            None | Some(Valor::Nulo(_)) => return Ok(0.0),
-            Some(otro) => {
-                // Numérico ya almacenado como días: úsalo directamente.
-                return Ok(otro.como_f64().unwrap_or(0.0));
-            }
-        }
+        return match buscar_valor(nombre_norm, valores) {
+            Some(Valor::Texto(s)) if s.trim().is_empty() => Ok(None),
+            Some(Valor::Texto(s)) => match functions::interpretar_fecha(s) {
+                Some(fecha) => Ok(Some(functions::fecha_a_dias(fecha) as f64)),
+                None => Err(format!("uso indebido de @FECHA: '{s}' no es una fecha")),
+            },
+            // Campo ausente o nulo: no hay fecha → resultado vacío.
+            None | Some(Valor::Nulo(_)) => Ok(None),
+            // Numérico ya almacenado como días: úsalo directamente.
+            Some(otro) => Ok(Some(otro.como_f64().unwrap_or(0.0))),
+        };
     }
     // Argumento general (subexpresión): ya está en días/número.
-    eval_num(arg, valores)
+    eval_num(arg, valores, ctx)
 }
 
 /// Busca un valor por nombre normalizado, probando la forma con espacios
@@ -382,9 +435,22 @@ mod tests {
         m
     }
 
+    /// Evalúa con los campos `fechas` declarados de tipo Fecha y hoy fijo.
+    fn eval_con(formula: &str, valores: &Valores, fechas: &[&str]) -> Result<Valor, String> {
+        let fechas: HashSet<String> = fechas.iter().map(|s| s.to_string()).collect();
+        let ctx = Contexto {
+            fechas: &fechas,
+            hoy: NaiveDate::from_ymd_opt(2026, 10, 13).unwrap(),
+        };
+        evaluar(&compilar(formula).unwrap(), valores, &ctx)
+    }
+
+    fn evalua(formula: &str, valores: &Valores) -> Result<Valor, String> {
+        eval_con(formula, valores, &[])
+    }
+
     fn num(formula: &str, valores: &Valores) -> f64 {
-        let ast = compilar(formula).unwrap();
-        match evaluar(&ast, valores).unwrap() {
+        match evalua(formula, valores).unwrap() {
             Valor::Numero(n) => n,
             otro => panic!("se esperaba número, hubo {otro:?}"),
         }
@@ -426,8 +492,7 @@ mod tests {
     #[test]
     fn division_por_cero_da_error() {
         let v = val(&[("A", Valor::Numero(5.0))]);
-        let ast = compilar("A/0").unwrap();
-        let r = evaluar(&ast, &v);
+        let r = evalua("A/0", &v);
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("cero"));
     }
@@ -435,8 +500,7 @@ mod tests {
     #[test]
     fn fecha_passthrough_devuelve_texto_iso() {
         let v = val(&[("Vencimiento", Valor::Texto("2007-11-15".into()))]);
-        let ast = compilar("@FECHA(Vencimiento)").unwrap();
-        match evaluar(&ast, &v).unwrap() {
+        match evalua("@FECHA(Vencimiento)", &v).unwrap() {
             Valor::Texto(s) => assert_eq!(s, "2007-11-15"),
             otro => panic!("se esperaba texto fecha, hubo {otro:?}"),
         }
@@ -462,7 +526,81 @@ mod tests {
     #[test]
     fn fecha_invalida_en_funcion_da_error() {
         let v = val(&[("X", Valor::Texto("no es fecha".into()))]);
-        let ast = compilar("@FECHA(X)").unwrap();
-        assert!(evaluar(&ast, &v).is_err());
+        assert!(evalua("@FECHA(X)", &v).is_err());
+    }
+
+    fn fechas_venc() -> Valores {
+        val(&[
+            ("Fecha Inicio", Valor::Texto("2026-01-01".into())),
+            ("Fecha Fin", Valor::Texto("2026-03-01".into())),
+            ("Cantidad", Valor::Numero(4.0)),
+        ])
+    }
+
+    #[test]
+    fn resta_directa_de_campos_fecha_da_dias() {
+        let v = fechas_venc();
+        let r = eval_con("Fecha_Fin - Fecha_Inicio", &v, &["Fecha_Inicio", "Fecha_Fin"]);
+        assert_eq!(r.unwrap(), Valor::Numero(59.0));
+    }
+
+    #[test]
+    fn sumar_y_restar_dias_a_una_fecha() {
+        let v = fechas_venc();
+        let fechas = ["Fecha_Inicio"];
+        let mas = eval_con("Fecha_Inicio + 30", &v, &fechas).unwrap();
+        let menos = eval_con("Fecha_Inicio - 7", &v, &fechas).unwrap();
+        let mas = mas.como_f64().unwrap();
+        let menos = menos.como_f64().unwrap();
+        assert_eq!(dias_a_valor_fecha(mas), Valor::Texto("2026-01-31".into()));
+        assert_eq!(dias_a_valor_fecha(menos), Valor::Texto("2025-12-25".into()));
+    }
+
+    #[test]
+    fn hoy_con_y_sin_parentesis() {
+        let v = fechas_venc();
+        let fechas = ["Fecha_Inicio", "Fecha_Fin"];
+        // Hoy fijo en 2026-10-13: desde el 2026-01-01 pasaron 285 días.
+        let r = eval_con("@HOY - Fecha_Inicio", &v, &fechas).unwrap();
+        assert_eq!(r, Valor::Numero(285.0));
+        let r = eval_con("@hoy() - Fecha_Inicio", &v, &fechas).unwrap();
+        assert_eq!(r, Valor::Numero(285.0));
+        let r = eval_con("Fecha_Fin - @HOY", &v, &fechas).unwrap();
+        assert_eq!(r, Valor::Numero(-226.0));
+    }
+
+    #[test]
+    fn hoy_no_acepta_argumentos() {
+        assert!(compilar("@HOY(Fecha)").is_err());
+        assert!(compilar("@FECHA").is_err());
+    }
+
+    #[test]
+    fn fecha_vacia_vacia_el_resultado() {
+        let mut v = fechas_venc();
+        v.insert("Fecha Fin".into(), Valor::Nulo(None));
+        let fechas = ["Fecha_Inicio", "Fecha_Fin"];
+        assert_eq!(
+            eval_con("Fecha_Fin - Fecha_Inicio", &v, &fechas).unwrap(),
+            Valor::Nulo(None)
+        );
+        // Texto vacío y campo ausente también vacían.
+        v.insert("Fecha Fin".into(), Valor::Texto(String::new()));
+        assert_eq!(
+            eval_con("Fecha_Fin + 1", &v, &fechas).unwrap(),
+            Valor::Nulo(None)
+        );
+        assert_eq!(
+            eval_con("@FECHA(Otra) + 1", &v, &fechas).unwrap(),
+            Valor::Nulo(None)
+        );
+    }
+
+    #[test]
+    fn numerico_vacio_sigue_siendo_cero_junto_a_fechas() {
+        let mut v = fechas_venc();
+        v.insert("Cantidad".into(), Valor::Nulo(None));
+        let r = eval_con("Fecha_Inicio + Cantidad", &v, &["Fecha_Inicio"]).unwrap();
+        assert_eq!(dias_a_valor_fecha(r.como_f64().unwrap()), Valor::Texto("2026-01-01".into()));
     }
 }

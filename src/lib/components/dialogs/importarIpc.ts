@@ -9,9 +9,29 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { TipoCampo } from "$lib/domain/types";
 
 /** Política de conflicto cuando la llave del archivo ya existe en el álbum. */
 export type PoliticaImport = "sustituir" | "mantener" | "rellenar_vacios";
+
+/** Una fila del archivo: número (base 1 contando el encabezado) y su llave. */
+export interface FilaLlave {
+  fila: number;
+  llave: string;
+}
+
+/** Lista de filas: `total` completo; `filas` truncado a 500 de detalle. */
+export interface ListaFilas {
+  total: number;
+  filas: FilaLlave[];
+}
+
+/** Columna del archivo sin campo en el álbum, con el tipo inferido. */
+export interface ColumnaExtra {
+  columna: string;
+  tipo: TipoCampo;
+  decimales: number;
+}
 
 /** Metadatos del archivo elegido, para poblar la fase de configuración. */
 export interface InspeccionImport {
@@ -29,6 +49,10 @@ export interface InspeccionImport {
   columnasNoReconocidas: string[];
   /** Campos elegibles como llave (principales, no calculados ni multidato). */
   camposLlaveSugeridos: string[];
+  /** Campos del álbum elegibles como llave, estén o no en el archivo. */
+  camposLlaveAlbum: string[];
+  /** Columnas extra con el tipo inferido (sin descartar aún la columna llave). */
+  columnasExtra: ColumnaExtra[];
   /** Huella (largo+mtime) para validar que el archivo no cambió al aplicar. */
   huella: string;
 }
@@ -38,6 +62,20 @@ export interface ResultadoImportacion {
   actualizados: number;
   creados: number;
   sinCambio: number;
+  /** Filas cuya llave casó con un registro existente. */
+  coincidentes: number;
+  /** Filas cuya llave no casó con ningún registro. */
+  noCoincidentes: ListaFilas;
+  /** Filas sin coincidencia omitidas (sin `crearFaltantes`). */
+  omitidos: number;
+  /** Filas con la llave vacía (siempre se omiten). */
+  llavesVacias: ListaFilas;
+  /** Filas con llave repetida en el archivo (se usa la primera). */
+  llavesDuplicadas: ListaFilas;
+  /** Columnas extra detectadas, con su tipo inferido. */
+  columnasExtra: ColumnaExtra[];
+  /** Campos creados (o que se crearían, en dry-run) para las columnas extra. */
+  camposCreados: string[];
   errores: string[];
   avisos: string[];
   /** `true` si fue un análisis previo (dry-run); `false` si se aplicó. */
@@ -59,30 +97,33 @@ export function importarInspeccionar(
   return invoke("importar_inspeccionar", { albumId, rutaArchivo });
 }
 
+/** Opciones de `importar_registros` (además del álbum y el archivo). */
+export interface OpcionesImport {
+  /** Campo del álbum que hace de llave. */
+  campoLlave: string;
+  /** Columna del archivo con la llave (default: la homónima del campo). */
+  columnaLlave: string;
+  politica: PoliticaImport;
+  /** Dar de alta las filas cuya llave no coincide (si no, se omiten). */
+  crearFaltantes: boolean;
+  /** Crear campos para las columnas extra e importar sus valores. */
+  importarExtras: boolean;
+  dryRun: boolean;
+  /** Huella de la inspección: el backend valida que el archivo no cambió. */
+  huella?: string;
+}
+
 /**
  * Importa registros desde el archivo. Con `dryRun = true` recorre la misma
  * lógica en seco y devuelve el resumen previo sin escribir; con `dryRun = false`
- * aplica los cambios. La `huella` (de la inspección) permite al backend validar
- * que el archivo no se modificó entre el resumen y la aplicación.
+ * aplica los cambios.
  */
 export function importarRegistros(
   albumId: number,
   rutaArchivo: string,
-  campoLlave: string,
-  politica: PoliticaImport,
-  crearFaltantes: boolean,
-  dryRun: boolean,
-  huella?: string,
+  opciones: OpcionesImport,
 ): Promise<ResultadoImportacion> {
-  return invoke("importar_registros", {
-    albumId,
-    rutaArchivo,
-    campoLlave,
-    politica,
-    crearFaltantes,
-    dryRun,
-    huella,
-  });
+  return invoke("importar_registros", { albumId, rutaArchivo, ...opciones });
 }
 
 /**

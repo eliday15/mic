@@ -27,11 +27,18 @@ import type {
 } from "$lib/domain/types";
 import { crearAlbumDemo, type AlbumMock, type RegistroMock } from "./datos";
 import {
+  elegirArchivoImportacion,
+  importar as importarRegistrosMock,
+  inspeccionar as inspeccionarImport,
+} from "./importar";
+import { manejarLigados } from "./ligados";
+import {
   construirArbol,
   ejecutarQuery,
   evaluarFormula,
   normalizar,
   recalcular,
+  refrescarHoy,
 } from "./motor";
 
 const albunes = new Map<number, AlbumMock>();
@@ -39,20 +46,6 @@ let proximoAlbumId = 1;
 
 /** Reportes guardados por álbum (mock del sistema de impresión). */
 const reportesMock = new Map<number, { nombre: string; config: unknown }[]>();
-
-/** Una liga del mock de álbumes ligados. */
-interface LigaMock {
-  id: number;
-  rutaAlbum: string;
-  llave: string;
-  crearFaltantes: boolean;
-}
-
-/** Ligas del mock (compartidas entre álbumes), con una liga demo inicial. */
-const ligasMock = new Map<number, LigaMock>([
-  [1, { id: 1, rutaAlbum: "/demo/Bodegas.micdb", llave: "Clave", crearFaltantes: false }],
-]);
-let proximaLigaId = 2;
 
 /** Una plantilla de álbum del mock (nombre + campos iniciales). */
 interface PlantillaMock {
@@ -178,16 +171,18 @@ function defCompleta(album: AlbumMock, def: CampoNuevo, id: number): CampoDef {
 
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Diálogo de archivos simulado: decide la ruta según los filtros pedidos. */
-function dialogoAbrir(options: unknown): string {
+/**
+ * Diálogo de archivos simulado: decide la ruta según los filtros pedidos. Para
+ * importar CSV/XLSX abre el selector real del navegador (ver `./importar`).
+ */
+function dialogoAbrir(options: unknown): string | Promise<string | null> {
   const exts: string[] =
     (options as { filters?: { extensions: string[] }[] })?.filters?.flatMap(
       (f) => f.extensions,
     ) ?? [];
   if (exts.includes("micdb")) return "/demo/Catálogo Demo.micdb";
   if (exts.includes("mdb")) return "/demo/viejo.mdb";
-  if (exts.includes("csv")) return "/demo/importar-demo.csv";
-  if (exts.includes("xlsx")) return "/demo/importar-demo.xlsx";
+  if (exts.includes("csv") || exts.includes("xlsx")) return elegirArchivoImportacion();
   return "/demo/imagenes/nueva-imagen.jpg";
 }
 
@@ -233,11 +228,15 @@ async function manejar(cmd: string, p: any): Promise<unknown> {
     }
     case "album_abrir": {
       const existente = [...albunes.values()].find((a) => a.ruta === p.ruta);
-      if (existente) return infoDe(existente);
+      if (existente) {
+        refrescarHoy(existente);
+        return infoDe(existente);
+      }
       const album = crearAlbumDemo(proximoAlbumId++, p.ruta);
       const base = String(p.ruta).split("/").pop()?.replace(/\.micdb$/, "");
       if (base && base !== "demo") album.nombre = base;
       albunes.set(album.albumId, album);
+      refrescarHoy(album);
       return infoDe(album);
     }
     case "album_cerrar":
@@ -262,6 +261,10 @@ async function manejar(cmd: string, p: any): Promise<unknown> {
       for (const r of tablaDe(a, def.tabla)) {
         r.valores[def.nombre] = def.tipo === "multidato" ? 0 : null;
         if (def.tipo === "multidato") r.multidatos[def.nombre] = [];
+      }
+      // Como el backend: un calculado nuevo se calcula de inmediato.
+      if (def.tipo === "calculado") {
+        for (const r of tablaDe(a, def.tabla)) recalcular(r, a.campos, def.tabla);
       }
       return def;
     }
@@ -308,7 +311,12 @@ async function manejar(cmd: string, p: any): Promise<unknown> {
     }
     case "formula_probar": {
       const a = obtenerAlbum(p.albumId);
-      return evaluarFormula(p.formula, p.valores as Valores, a.campos);
+      return evaluarFormula(
+        p.formula,
+        p.valores as Valores,
+        a.campos,
+        (p.formato as string | null | undefined) ?? null,
+      );
     }
 
     // --- Registros ---
@@ -593,31 +601,16 @@ async function manejar(cmd: string, p: any): Promise<unknown> {
     case "grupo_arbol":
       return construirArbol(obtenerAlbum(p.albumId), p.grupoId);
 
-    // --- Álbumes ligados ---
+    // --- Álbumes ligados (ver ./ligados.ts) ---
     case "ligados_listar":
-      return [...ligasMock.values()];
-    case "liga_guardar": {
-      const liga = p.liga as LigaMock;
-      if (liga.id === 0) {
-        const nueva = { ...liga, id: proximaLigaId++ };
-        ligasMock.set(nueva.id, nueva);
-        return nueva.id;
-      }
-      ligasMock.set(liga.id, liga);
-      return liga.id;
-    }
+    case "liga_guardar":
     case "liga_eliminar":
-      ligasMock.delete(p.ligaId);
-      return null;
-    case "liga_actualizar": {
-      for (let hechas = 0; hechas <= 50; hechas += 25) {
-        await emit("liga-progreso", { hechas, total: 50 });
-        await espera(266);
-      }
-      return { actualizados: 42, creados: 3, sinCoincidencia: 5 };
-    }
+    case "liga_inspeccionar":
+    case "liga_actualizar":
     case "ligas_actualizar_todas":
-      return [{ actualizados: 42, creados: 3, sinCoincidencia: 5 }];
+      return manejarLigados(cmd, p, obtenerAlbum, (ruta) =>
+        [...albunes.values()].find((a) => a.ruta === ruta),
+      );
 
     // --- Filtros guardados ---
     case "filtros_listar":
@@ -644,60 +637,38 @@ async function manejar(cmd: string, p: any): Promise<unknown> {
     }
 
     // --- Importación de registros ---
-    case "importar_inspeccionar": {
-      const a = obtenerAlbum(p.albumId);
-      await espera(250);
-      const esXlsx = String(p.rutaArchivo).endsWith(".xlsx");
-      // Toma las primeras columnas principales del álbum demo y añade una
-      // columna de ruido para ejercitar el aviso de "ignoradas".
-      const cols = a.campos
-        .filter((c) => c.tabla === "principal")
-        .slice(0, 4)
-        .map((c) => c.nombre);
-      const elegibles = a.campos
-        .filter(
-          (c) =>
-            c.tabla === "principal" &&
-            c.tipo !== "calculado" &&
-            c.tipo !== "multidato",
-        )
-        .map((c) => c.nombre);
-      return {
-        columnas: [...cols, "ColumnaDesconocida"],
-        totalFilas: 120,
-        encoding: esXlsx ? "utf-8" : "utf-8-bom",
-        formato: esXlsx ? "xlsx" : "csv",
-        columnasReconocidas: cols,
-        columnasNoReconocidas: ["ColumnaDesconocida"],
-        camposLlaveSugeridos: elegibles,
-        huella: "12345:1717545600",
-      };
-    }
+    case "importar_inspeccionar":
+      return inspeccionarImport(obtenerAlbum(p.albumId), p.rutaArchivo);
     case "importar_registros": {
-      const fase = p.dryRun ? "analizando" : "aplicando";
-      for (let hechas = 0; hechas <= 120; hechas += 40) {
-        await emit("importacion-progreso", { fase, hechas, total: 120 });
-        await espera(180);
-      }
-      return p.dryRun
-        ? {
-            actualizados: 80,
-            creados: 25,
-            sinCambio: 15,
-            errores: [],
-            avisos: [
-              "llave duplicada en el archivo: 'A-1' (se usó la primera fila)",
-            ],
-            dryRun: true,
-          }
-        : {
-            actualizados: 80,
-            creados: 25,
-            sinCambio: 15,
-            errores: [],
-            avisos: [],
-            dryRun: false,
+      const a = obtenerAlbum(p.albumId);
+      return importarRegistrosMock(a, p.rutaArchivo, p, {
+        crearCampo: (def) => {
+          const nuevo = defCompleta(a, def, a.proximoCampoId++);
+          a.campos.push(nuevo);
+          for (const r of a.principal) r.valores[nuevo.nombre] = null;
+          return nuevo;
+        },
+        crearRegistro: (valores, multidatos) => {
+          const r: RegistroMock = {
+            id: a.proximoId++,
+            idPrincipal: null,
+            imagen: null,
+            imagenVersion: 1,
+            oculto: false,
+            valores: { ...valores },
+            multidatos: { ...multidatos },
           };
+          sincronizarConteos(a, "principal", r);
+          recalcular(r, a.campos, "principal");
+          a.principal.push(r);
+        },
+        editarRegistro: (r, valores, multidatos) => {
+          Object.assign(r.valores, valores);
+          if (multidatos) r.multidatos = { ...multidatos };
+          sincronizarConteos(a, "principal", r);
+          recalcular(r, a.campos, "principal");
+        },
+      });
     }
 
     // --- Miniaturas ---

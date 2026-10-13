@@ -6,7 +6,7 @@
  *   precedencia), igual que el original VB6.
  * - Búsqueda libre: subcadena sin acentos sobre todos los valores de texto.
  * - Orden: hasta 3 niveles, con comparación según tipo de campo.
- * - Fórmulas: sustitución de nombres de campo y evaluación aritmética simple.
+ * - Fórmulas: delegadas en `formula.ts` (espejo de `mic-core::calc`).
  */
 
 import type {
@@ -19,6 +19,8 @@ import type {
   Valores,
 } from "$lib/domain/types";
 import type { AlbumMock, RegistroMock } from "./datos";
+import { evaluarFormulaMock, usaHoy } from "./formula";
+import { hoyIso } from "$lib/utils/format";
 
 /** Quita acentos y pasa a minúsculas (equivale a unicode61 remove_diacritics). */
 export function normalizar(s: string): string {
@@ -127,6 +129,11 @@ export function ejecutarQuery(
     regs = regs.filter((r) => !r.oculto);
   }
 
+  if (req.excluidos && req.excluidos.length > 0) {
+    const fuera = new Set(req.excluidos);
+    regs = regs.filter((r) => !fuera.has(r.id));
+  }
+
   if (req.grupo) {
     const g = album.grupos.find((x) => x.id === req.grupo!.grupoId);
     if (g) {
@@ -200,40 +207,17 @@ export function construirArbol(album: AlbumMock, grupoId: number): NodoGrupo[] {
 }
 
 /**
- * Evalúa una fórmula de campo calculado: sustituye nombres de campo (el más
- * largo primero, para que "Precio Var" gane a "Precio") por sus valores
- * numéricos y evalúa la aritmética restante. Solo permite dígitos y
- * operadores tras la sustitución — suficiente para el mock.
+ * Evalúa una fórmula de campo calculado con la semántica del motor Rust
+ * (fechas en días, `@FECHA`, `@HOY`, resultado fecha con `formato: "fecha"`).
+ * Lanza `string` si la fórmula es inválida (vista previa del editor).
  */
 export function evaluarFormula(
   formula: string,
   valores: Valores,
   campos: CampoDef[],
+  formato: string | null = null,
 ): Valor {
-  let expr = formula;
-  // Acepta el nombre visible y su forma de fórmula (espacios → `_`), igual
-  // que el motor real (normaliza_nombre del port de Module5.bas).
-  const alias: [string, string][] = campos.flatMap((c) => {
-    const formas: [string, string][] = [[c.nombre, c.nombre]];
-    const conGuion = c.nombre.replace(/ /g, "_");
-    if (conGuion !== c.nombre) formas.push([conGuion, c.nombre]);
-    return formas;
-  });
-  alias.sort((a, b) => b[0].length - a[0].length);
-  for (const [forma, nombre] of alias) {
-    if (!expr.includes(forma)) continue;
-    const v = aNumero(valores[nombre] ?? null) ?? 0;
-    expr = expr.split(forma).join(`(${v})`);
-  }
-  if (!/^[\d\s+\-*/().,]+$/.test(expr)) return null;
-  try {
-    // Mock de desarrollo: la expresión ya quedó saneada por la regex previa.
-    const r = new Function(`return (${expr.replace(/,/g, ".")});`)() as unknown;
-    if (typeof r !== "number" || !isFinite(r)) return null;
-    return Math.round(r * 100) / 100;
-  } catch {
-    return null;
-  }
+  return evaluarFormulaMock(formula, valores, campos, formato);
 }
 
 /** Recalcula los campos calculados de un registro (tras crear/editar). */
@@ -244,6 +228,44 @@ export function recalcular(
 ): void {
   for (const c of campos) {
     if (c.tabla !== tabla || c.tipo !== "calculado" || !c.formula) continue;
-    reg.valores[c.nombre] = evaluarFormula(c.formula, reg.valores, campos);
+    try {
+      reg.valores[c.nombre] = evaluarFormula(c.formula, reg.valores, campos, c.formato);
+    } catch {
+      reg.valores[c.nombre] = null;
+    }
   }
+}
+
+/**
+ * Espejo de `recalculo_hoy::recalcular_si_cambio_dia`: al abrir, si el último
+ * recálculo de `@HOY` no fue hoy, recalcula SOLO los calculados que lo usan.
+ * Sin `@HOY` no hace nada (ni guarda la marca). Devuelve registros cambiados.
+ */
+export function refrescarHoy(album: AlbumMock): number {
+  const objetivos = album.campos.filter(
+    (c) => c.tipo === "calculado" && c.formula && usaHoy(c.formula, album.campos),
+  );
+  const hoy = hoyIso();
+  if (objetivos.length === 0 || album.hoyRecalculado === hoy) return 0;
+  let cambiados = 0;
+  for (const reg of [...album.principal, ...album.variantes]) {
+    const tabla = album.principal.includes(reg) ? "principal" : "variantes";
+    let cambia = false;
+    for (const c of objetivos) {
+      if (c.tabla !== tabla) continue;
+      let nuevo: Valor;
+      try {
+        nuevo = evaluarFormula(c.formula!, reg.valores, album.campos, c.formato);
+      } catch {
+        continue; // como el backend: un error conserva el valor guardado
+      }
+      if (nuevo !== (reg.valores[c.nombre] ?? null)) {
+        reg.valores[c.nombre] = nuevo;
+        cambia = true;
+      }
+    }
+    if (cambia) cambiados++;
+  }
+  album.hoyRecalculado = hoy;
+  return cambiados;
 }

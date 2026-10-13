@@ -328,6 +328,16 @@ mod tests {
         }
     }
 
+    /// Evalúa sin campos fecha y con un "hoy" fijo (estas pruebas no lo usan).
+    fn evaluar(ast: &Ast, v: &crate::model::Valores) -> Result<Valor, String> {
+        let fechas = HashSet::new();
+        let ctx = eval::Contexto {
+            fechas: &fechas,
+            hoy: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        };
+        eval::evaluar(ast, v, &ctx)
+    }
+
     fn valores(pares: &[(&str, f64)]) -> crate::model::Valores {
         let mut m = HashMap::new();
         for (k, v) in pares {
@@ -345,7 +355,7 @@ mod tests {
         ];
         let (asts, _) = compilar_todo(&campos).unwrap();
         let v = valores(&[("Cantidad", 3.0), ("Precio", 10.0)]);
-        let r = eval::evaluar(asts.get("Total").unwrap(), &v).unwrap();
+        let r = evaluar(asts.get("Total").unwrap(), &v).unwrap();
         assert_eq!(r, Valor::Numero(30.0));
     }
 
@@ -362,15 +372,15 @@ mod tests {
         let v = valores(&[("Base", 5.0)]);
         // C = 10, B = 11, A = 110.
         assert_eq!(
-            eval::evaluar(asts.get("C").unwrap(), &v).unwrap(),
+            evaluar(asts.get("C").unwrap(), &v).unwrap(),
             Valor::Numero(10.0)
         );
         assert_eq!(
-            eval::evaluar(asts.get("B").unwrap(), &v).unwrap(),
+            evaluar(asts.get("B").unwrap(), &v).unwrap(),
             Valor::Numero(11.0)
         );
         assert_eq!(
-            eval::evaluar(asts.get("A").unwrap(), &v).unwrap(),
+            evaluar(asts.get("A").unwrap(), &v).unwrap(),
             Valor::Numero(110.0)
         );
         // Orden topológico: C antes que B antes que A.
@@ -386,7 +396,7 @@ mod tests {
         let (asts, _) = compilar_todo(&campos).unwrap();
         let v = valores(&[("X", 3.0)]);
         assert_eq!(
-            eval::evaluar(asts.get("A").unwrap(), &v).unwrap(),
+            evaluar(asts.get("A").unwrap(), &v).unwrap(),
             Valor::Numero(8.0)
         );
     }
@@ -415,7 +425,7 @@ mod tests {
         let (asts, _) = compilar_todo(&campos).unwrap();
         let v = valores(&[("Precio Venta", 12.5), ("Unidades", 4.0)]);
         assert_eq!(
-            eval::evaluar(asts.get("Importe").unwrap(), &v).unwrap(),
+            evaluar(asts.get("Importe").unwrap(), &v).unwrap(),
             Valor::Numero(50.0)
         );
     }
@@ -425,6 +435,6 @@ mod tests {
         let campos = vec![dato(1, "X"), calc(2, "B", "X+1")];
         let ast = compilar_una(&campos, "B*3").unwrap();
         let v = valores(&[("X", 2.0)]);
-        assert_eq!(eval::evaluar(&ast, &v).unwrap(), Valor::Numero(9.0));
+        assert_eq!(evaluar(&ast, &v).unwrap(), Valor::Numero(9.0));
     }
 }

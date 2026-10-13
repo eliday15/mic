@@ -89,13 +89,25 @@ export function formatearFecha(valor: Valor): string {
   }).format(d);
 }
 
+/** True si el campo muestra fechas: tipo fecha o calculado con resultado fecha. */
+export function esCampoFecha(campo: {
+  tipo: string;
+  formato?: string | null;
+}): boolean {
+  return (
+    campo.tipo === "fecha" ||
+    (campo.tipo === "calculado" && campo.formato === "fecha")
+  );
+}
+
 /**
  * Formatea un valor según el tipo de campo, para mostrar en grilla/tabla.
  *
  * @param valor     Valor crudo del registro.
  * @param tipo      Tipo del campo.
  * @param decimales Decimales de presentación/redondeo (por defecto 2).
- * @param formato   Formato de presentación: 'moneda' | 'porcentaje' | null.
+ * @param formato   Formato de presentación: 'moneda' | 'porcentaje' | 'fecha'
+ *                  (calculado con resultado fecha) | null.
  */
 export function formatearPorTipo(
   valor: Valor,
@@ -104,6 +116,7 @@ export function formatearPorTipo(
   formato: string | null = null,
 ): string {
   if (valor === null) return "";
+  if (esCampoFecha({ tipo, formato })) return formatearFecha(valor);
   // El formato de presentación manda sobre el tipo, pero solo aplica a tipos
   // numéricos (número/moneda/calculado): un texto jamás se "porcentajiza".
   const esNumericoTipo =

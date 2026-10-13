@@ -10,6 +10,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+/** Qué foto queda cuando el registro actual y el ligado tienen imagen. */
+export type FuenteFotos = "actual" | "ligado";
+
 /** Una liga: sincroniza datos desde `rutaAlbum` usando el campo `llave`. */
 export interface Liga {
   /** Id en la tabla `ligados`. `0` al crear (lo asigna el backend). */
@@ -20,6 +23,13 @@ export interface Liga {
   llave: string;
   /** Si la llave del ligado no existe en el actual, ¿dar de alta el registro? */
   crearFaltantes: boolean;
+  /**
+   * Foto a conservar si ambos registros tienen imagen (si el actual no tiene,
+   * la del ligado se importa siempre).
+   */
+  fotos: FuenteFotos;
+  /** Crear aquí los campos que solo existen en el ligado y copiar sus valores. */
+  importarCamposNuevos: boolean;
 }
 
 /** Resultado de actualizar una liga. */
@@ -27,6 +37,24 @@ export interface ResultadoLiga {
   actualizados: number;
   creados: number;
   sinCoincidencia: number;
+  /** Fotos importadas del álbum ligado. */
+  fotosCopiadas: number;
+  /** Nombres de los campos creados en el álbum actual. */
+  camposCreados: string[];
+}
+
+/** Comparación de estructuras entre el álbum actual y uno a ligar. */
+export interface InspeccionLiga {
+  /** Campos principales presentes en ambos (se sincronizan). */
+  camposComunes: string[];
+  /** Campos solo del ligado que se pueden crear aquí. */
+  camposSoloLigado: string[];
+  /** Campos solo del ligado que no se importan (calculados y multidatos). */
+  camposNoImportables: string[];
+  /** Registros del álbum ligado. */
+  totalRegistros: number;
+  /** Registros del álbum ligado con foto. */
+  conImagen: number;
 }
 
 /** Payload del evento `liga-progreso`. */
@@ -48,6 +76,14 @@ export function ligaGuardar(albumId: number, liga: Liga): Promise<number> {
 /** Elimina una liga por id. */
 export function ligaEliminar(albumId: number, ligaId: number): Promise<void> {
   return invoke("liga_eliminar", { albumId, ligaId });
+}
+
+/** Compara la estructura del álbum actual con la del álbum `rutaAlbum`. */
+export function ligaInspeccionar(
+  albumId: number,
+  rutaAlbum: string,
+): Promise<InspeccionLiga> {
+  return invoke("liga_inspeccionar", { albumId, rutaAlbum });
 }
 
 /** Actualiza una liga (sincroniza datos del álbum ligado al actual). */

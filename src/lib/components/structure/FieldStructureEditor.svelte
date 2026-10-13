@@ -67,12 +67,17 @@
     { valor: "multidato", etiqueta: t.campos.tipos.multidato },
   ];
 
-  /** Opciones del formato de presentación (mapean tipo+formato internos). */
-  type FormatoUi = "simple" | "moneda" | "pct";
-  const opcionesFormato: { valor: FormatoUi; etiqueta: string }[] = [
+  /** Opciones del formato de presentación (mapean tipo+formato internos).
+      `fecha` (solo calculados) es el tipo de resultado: la fórmula da una fecha. */
+  type FormatoUi = "simple" | "moneda" | "pct" | "fecha";
+  const opcionesFormatoNumero: { valor: FormatoUi; etiqueta: string }[] = [
     { valor: "simple", etiqueta: t.campos.formatoSimple },
     { valor: "moneda", etiqueta: t.campos.tipos.moneda },
     { valor: "pct", etiqueta: t.campos.formatoPorcentaje },
+  ];
+  const opcionesFormatoCalculado: { valor: FormatoUi; etiqueta: string }[] = [
+    ...opcionesFormatoNumero,
+    { valor: "fecha", etiqueta: t.campos.formatoFecha },
   ];
 
   /** Tipo mostrado en el select (moneda se presenta como número). */
@@ -133,7 +138,8 @@
     borrador.tipo === "numerico" || borrador.tipo === "moneda",
   );
   const esCalculado = $derived(borrador.tipo === "calculado");
-  const muestraDecimales = $derived(esNumero || esCalculado);
+  const esResultadoFecha = $derived(esCalculado && borrador.formato === "fecha");
+  const muestraDecimales = $derived(esNumero || (esCalculado && !esResultadoFecha));
   const muestraFormula = $derived(esCalculado);
 
   /** Valor del select de formato derivado del tipo+formato internos. */
@@ -142,7 +148,9 @@
       ? "moneda"
       : borrador.formato === "porcentaje"
         ? "pct"
-        : "simple",
+        : borrador.formato === "fecha"
+          ? "fecha"
+          : "simple",
   );
 
   /** Aplica el formato elegido: en número mapea al tipo (compatibilidad con
@@ -150,7 +158,15 @@
   function setFormatoUi(v: FormatoUi): void {
     if (esCalculado) {
       borrador.formato =
-        v === "pct" ? "porcentaje" : v === "moneda" ? "moneda" : null;
+        v === "pct"
+          ? "porcentaje"
+          : v === "moneda"
+            ? "moneda"
+            : v === "fecha"
+              ? "fecha"
+              : null;
+      // Una fecha no se suma.
+      if (v === "fecha") borrador.totalizable = false;
       return;
     }
     if (v === "moneda") {
@@ -329,6 +345,8 @@
               borrador.tipo = v;
               // El formato solo tiene sentido en número/calculado.
               if (v !== "numerico" && v !== "calculado") borrador.formato = null;
+              // El resultado fecha es exclusivo de calculados.
+              if (v !== "calculado" && borrador.formato === "fecha") borrador.formato = null;
             }}
           />
         </label>
@@ -344,7 +362,7 @@
             <span class="campo-form__etq">{t.campos.formato}</span>
             <Select
               value={formatoUi}
-              opciones={opcionesFormato}
+              opciones={esCalculado ? opcionesFormatoCalculado : opcionesFormatoNumero}
               etiqueta={t.campos.formato}
               onCambio={setFormatoUi}
             />
@@ -368,7 +386,11 @@
           {t.campos.modificable}
         </label>
         <label class="campo-form__check">
-          <input type="checkbox" bind:checked={borrador.totalizable} />
+          <input
+            type="checkbox"
+            bind:checked={borrador.totalizable}
+            disabled={esResultadoFecha}
+          />
           {t.campos.totalizable}
         </label>
       </div>
@@ -378,6 +400,8 @@
           <FormulaEditor
             albumId={estado.albumId}
             bind:formula={formulaTexto}
+            formato={borrador.formato ?? null}
+            onFormato={(f) => setFormatoUi(f === "fecha" ? "fecha" : "simple")}
             campos={campos.filter((c) => c.id !== editandoId)}
           />
         </div>

@@ -2,7 +2,8 @@
  * Estado reactivo por álbum abierto.
  *
  * `createAlbumState(info)` produce un objeto de estado independiente para cada
- * pestaña de álbum: campos, filtros activos (rápido + condiciones avanzadas),
+ * pestaña de álbum: campos, filtros activos (rápido + condiciones apilables +
+ * exclusiones manuales),
  * búsqueda, orden (hasta 3 niveles), grupo seleccionado, selección de
  * registros, vista (grilla/tabla), zoom y bandera `dirty`.
  *
@@ -17,6 +18,7 @@ import type {
   CampoDef,
   CondicionFiltro,
   FiltroRapido,
+  OpRel,
   OrdenCampo,
   QueryReq,
   SeleccionGrupo,
@@ -34,6 +36,17 @@ const ZOOM_PASO = 30;
 
 /** Número máximo de niveles de orden (como frmOrdenar del original). */
 export const MAX_ORDEN = 3;
+
+/**
+ * Garantiza la forma de una cadena de condiciones: la primera sin conector y
+ * las demás con Y/O (Y si no tenían). Se aplica tras agregar, quitar o mover.
+ */
+function normalizarConectores(lista: CondicionFiltro[]): CondicionFiltro[] {
+  return lista.map((c, i) => {
+    const opRel: OpRel | null = i === 0 ? null : (c.opRel ?? "y");
+    return c.opRel === opRel ? c : { ...c, opRel };
+  });
+}
 
 /** Tipo del estado de un álbum (lo que devuelve la factory). */
 export type AlbumState = ReturnType<typeof createAlbumState>;
@@ -59,6 +72,8 @@ export function createAlbumState(info: AlbumInfo) {
   let orden = $state<OrdenCampo[]>([]);
   let grupoSel = $state<SeleccionGrupo | null>(null);
   let incluirOcultos = $state(false);
+  /** Ids quitados a mano del resultado ("Quitar del filtro"), en orden de quita. */
+  let excluidos = $state<number[]>([]);
 
   // --- Selección y presentación -----------------------------------------
   const seleccion = new SvelteSet<number>();
@@ -97,6 +112,7 @@ export function createAlbumState(info: AlbumInfo) {
   const hayFiltros = $derived(
     filtroRapido !== null ||
       condiciones.length > 0 ||
+      excluidos.length > 0 ||
       busqueda.trim() !== "" ||
       grupoSel !== null,
   );
@@ -156,6 +172,9 @@ export function createAlbumState(info: AlbumInfo) {
     get incluirOcultos() {
       return incluirOcultos;
     },
+    get excluidos() {
+      return excluidos;
+    },
 
     // ---- Presentación / selección (lectura) ----
     get seleccion() {
@@ -213,6 +232,8 @@ export function createAlbumState(info: AlbumInfo) {
     setTabla(t: Tabla): void {
       if (tabla === t) return;
       tabla = t;
+      // Los ids excluidos pertenecen a la tabla anterior.
+      excluidos = [];
       seleccion.clear();
       marcarConsulta();
     },
@@ -236,15 +257,86 @@ export function createAlbumState(info: AlbumInfo) {
       marcarConsulta();
     },
 
-    /** Agrega una condición de filtro avanzado. */
+    /** Agrega una condición al final de la lista (se suma con Y por defecto). */
     agregarCondicion(c: CondicionFiltro): void {
-      condiciones = [...condiciones, c];
+      condiciones = normalizarConectores([...condiciones, c]);
       marcarConsulta();
     },
 
     /** Quita la condición en el índice indicado. */
     quitarCondicion(indice: number): void {
-      condiciones = condiciones.filter((_, i) => i !== indice);
+      condiciones = normalizarConectores(
+        condiciones.filter((_, i) => i !== indice),
+      );
+      marcarConsulta();
+    },
+
+    /**
+     * Mueve una condición de `desde` a `hasta` (índices de la lista actual).
+     * El orden importa: la cadena se evalúa de izquierda a derecha.
+     */
+    moverCondicion(desde: number, hasta: number): void {
+      if (
+        desde === hasta ||
+        desde < 0 ||
+        hasta < 0 ||
+        desde >= condiciones.length ||
+        hasta >= condiciones.length
+      ) {
+        return;
+      }
+      const lista = condiciones.slice();
+      const [movida] = lista.splice(desde, 1);
+      lista.splice(hasta, 0, movida);
+      // Cada condición lleva su conector consigo, salvo al cambiar la cabeza:
+      // la nueva primera pierde el suyo y se lo cede a la antigua primera, así
+      // invertir "A O B" da "B O A" y no "B Y A".
+      if (lista[0] !== condiciones[0]) {
+        const exCabeza = lista.indexOf(condiciones[0]);
+        lista[exCabeza] = { ...condiciones[0], opRel: lista[0].opRel ?? "y" };
+      }
+      condiciones = normalizarConectores(lista);
+      marcarConsulta();
+    },
+
+    /** Cambia el conector Y/O de la condición `indice` (no aplica a la primera). */
+    setConector(indice: number, opRel: OpRel): void {
+      if (indice <= 0 || indice >= condiciones.length) return;
+      condiciones = condiciones.map((c, i) =>
+        i === indice ? { ...c, opRel } : c,
+      );
+      marcarConsulta();
+    },
+
+    /** Quita condiciones, filtro rápido y exclusiones manuales. */
+    limpiarCondiciones(): void {
+      filtroRapido = null;
+      condiciones = [];
+      excluidos = [];
+      marcarConsulta();
+    },
+
+    // ---- Exclusiones manuales ("Quitar del filtro") ----
+    /** Quita del resultado los registros indicados y limpia la selección. */
+    excluir(ids: Iterable<number>): void {
+      const nuevos = new Set(excluidos);
+      for (const id of ids) nuevos.add(id);
+      if (nuevos.size === excluidos.length) return;
+      excluidos = [...nuevos];
+      seleccion.clear();
+      marcarConsulta();
+    },
+
+    /** Devuelve al resultado un registro excluido. */
+    restaurarExcluido(id: number): void {
+      excluidos = excluidos.filter((x) => x !== id);
+      marcarConsulta();
+    },
+
+    /** Devuelve al resultado todos los registros excluidos. */
+    restaurarExcluidos(): void {
+      if (excluidos.length === 0) return;
+      excluidos = [];
       marcarConsulta();
     },
 
@@ -289,6 +381,7 @@ export function createAlbumState(info: AlbumInfo) {
     limpiarFiltros(): void {
       filtroRapido = null;
       condiciones = [];
+      excluidos = [];
       busqueda = "";
       grupoSel = null;
       marcarConsulta();
@@ -404,6 +497,7 @@ export function createAlbumState(info: AlbumInfo) {
         busqueda: b === "" ? null : b,
         orden,
         incluirOcultos,
+        excluidos,
         offset,
         limit,
       };

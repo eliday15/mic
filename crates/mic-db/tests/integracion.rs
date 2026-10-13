@@ -177,6 +177,168 @@ fn crud_registros_con_calculados() {
 }
 
 #[test]
+fn calculado_fecha_se_guarda_iso_y_ordena_y_filtra_como_fecha() {
+    let (db, _d) = album_tmp();
+    let mut conn = db.conn().unwrap();
+
+    repo_campos::crear(&conn, &campo("Alta", TipoCampo::Fecha)).unwrap();
+    let mut vence = campo("Vence", TipoCampo::Calculado);
+    vence.formula = Some("Alta + 30".to_string());
+    vence.formato = Some("fecha".to_string());
+    repo_campos::crear(&conn, &vence).unwrap();
+    let mut dias = campo("Dias", TipoCampo::Calculado);
+    dias.formula = Some("Vence - Alta".to_string());
+    repo_campos::crear(&conn, &dias).unwrap();
+
+    let campos = repo_campos::listar(&conn).unwrap();
+    let motor = MotorCalculo::new(&campos).unwrap();
+
+    let mut ids = Vec::new();
+    for alta in [Some("2026-12-20"), None, Some("2026-01-05")] {
+        let mut v: Valores = HashMap::new();
+        v.insert(
+            "Alta".into(),
+            alta.map_or(Valor::Nulo(None), val_txt),
+        );
+        let id = repo_registros::crear(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            Tabla::Principal,
+            &v,
+            &HashMap::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        ids.push(id);
+    }
+
+    // Resultado fecha persistido como TEXT ISO; diferencia de días como número.
+    let r0 = repo_registros::obtener(&conn, &campos, Tabla::Principal, ids[0]).unwrap();
+    assert_eq!(r0.valores["Vence"], val_txt("2027-01-19"));
+    assert_eq!(r0.valores["Dias"], val_num(30.0));
+    // Sin fecha base: ambos calculados quedan vacíos (no 1900-01-31).
+    let r1 = repo_registros::obtener(&conn, &campos, Tabla::Principal, ids[1]).unwrap();
+    assert_eq!(r1.valores["Vence"], Valor::Nulo(None));
+    assert_eq!(r1.valores["Dias"], Valor::Nulo(None));
+
+    // Orden cronológico (no alfabético dd/mm) y filtro por fecha ISO.
+    let mut req = QueryReq {
+        tabla: Tabla::Principal,
+        id_principal: None,
+        grupo: None,
+        filtro_rapido: None,
+        condiciones: vec![CondicionFiltro {
+            op_rel: None,
+            campo: "Vence".into(),
+            op_comp: OpComp::Mayor,
+            valor: "2026-06-01".into(),
+        }],
+        busqueda: None,
+        orden: vec![OrdenCampo {
+            campo: "Vence".into(),
+            direccion: Direccion::Asc,
+        }],
+        incluir_ocultos: false,
+        excluidos: Vec::new(),
+        offset: 0,
+        limit: 100,
+    };
+    let page = repo_registros::query(&conn, &campos, &req).unwrap();
+    assert_eq!(page.total, 1);
+    req.condiciones.clear();
+    let page = repo_registros::query(&conn, &campos, &req).unwrap();
+    let orden: Vec<i64> = page.registros.iter().map(|r| r.id).collect();
+    // NULL primero en ASC, luego 2026-02-04 y 2027-01-19.
+    assert_eq!(orden, vec![ids[1], ids[2], ids[0]]);
+}
+
+#[test]
+fn recalculo_diario_solo_toca_calculados_con_hoy() {
+    use chrono::NaiveDate;
+    use mic_db::recalculo_hoy::{recalcular_si_cambio_dia, CLAVE_HOY};
+
+    let (db, _d) = album_tmp();
+    let mut conn = db.conn().unwrap();
+    repo_campos::crear(&conn, &campo("Venc", TipoCampo::Fecha)).unwrap();
+    repo_campos::crear(&conn, &campo("Cantidad", TipoCampo::Numerico)).unwrap();
+    let mut faltan = campo("Faltan", TipoCampo::Calculado);
+    faltan.formula = Some("Venc - @HOY".to_string());
+    repo_campos::crear(&conn, &faltan).unwrap();
+    let mut doble = campo("Doble", TipoCampo::Calculado);
+    doble.formula = Some("Cantidad * 2".to_string());
+    repo_campos::crear(&conn, &doble).unwrap();
+    let campos = repo_campos::listar(&conn).unwrap();
+    let motor = MotorCalculo::new(&campos).unwrap();
+
+    let mut ids = Vec::new();
+    for venc in ["2030-01-31", "2030-03-01"] {
+        let mut v: Valores = HashMap::new();
+        v.insert("Venc".into(), val_txt(venc));
+        v.insert("Cantidad".into(), val_num(3.0));
+        let id = repo_registros::crear(
+            &mut conn, &campos, Some(&motor), Tabla::Principal, &v,
+            &HashMap::new(), None, None, None,
+        )
+        .unwrap();
+        ids.push(id);
+    }
+    // Desfasa "Doble" a mano: si el recálculo lo tocara, volvería a 6.
+    conn.execute(
+        &format!(
+            "UPDATE principal SET {} = 99",
+            campos.iter().find(|c| c.nombre == "Doble").unwrap().col_fisica
+        ),
+        [],
+    )
+    .unwrap();
+
+    let hoy = NaiveDate::from_ymd_opt(2030, 1, 1).unwrap();
+    assert_eq!(recalcular_si_cambio_dia(&conn, &campos, Some(&motor), hoy).unwrap(), 2);
+    let r0 = repo_registros::obtener(&conn, &campos, Tabla::Principal, ids[0]).unwrap();
+    let r1 = repo_registros::obtener(&conn, &campos, Tabla::Principal, ids[1]).unwrap();
+    assert_eq!(r0.valores["Faltan"], val_num(30.0));
+    assert_eq!(r1.valores["Faltan"], val_num(59.0));
+    assert_eq!(r0.valores["Doble"], val_num(99.0));
+
+    // Marca del día guardada: el mismo día no recalcula de nuevo.
+    let marca: String = conn
+        .query_row("SELECT valor FROM mic_album WHERE clave = ?1", [CLAVE_HOY], |r| r.get(0))
+        .unwrap();
+    assert_eq!(marca, "2030-01-01");
+    assert_eq!(recalcular_si_cambio_dia(&conn, &campos, Some(&motor), hoy).unwrap(), 0);
+
+    // Al día siguiente sí, y solo escribe lo que cambió.
+    let manana = hoy.succ_opt().unwrap();
+    assert_eq!(recalcular_si_cambio_dia(&conn, &campos, Some(&motor), manana).unwrap(), 2);
+    let r0 = repo_registros::obtener(&conn, &campos, Tabla::Principal, ids[0]).unwrap();
+    assert_eq!(r0.valores["Faltan"], val_num(29.0));
+}
+
+#[test]
+fn recalculo_diario_es_nulo_sin_hoy() {
+    use mic_db::recalculo_hoy::{recalcular_si_cambio_dia, CLAVE_HOY};
+
+    let (db, _d) = album_tmp();
+    let conn = db.conn().unwrap();
+    repo_campos::crear(&conn, &campo("Cantidad", TipoCampo::Numerico)).unwrap();
+    let mut doble = campo("Doble", TipoCampo::Calculado);
+    doble.formula = Some("Cantidad * 2".to_string());
+    repo_campos::crear(&conn, &doble).unwrap();
+    let campos = repo_campos::listar(&conn).unwrap();
+    let motor = MotorCalculo::new(&campos).unwrap();
+    let hoy = chrono::NaiveDate::from_ymd_opt(2030, 1, 1).unwrap();
+    assert_eq!(recalcular_si_cambio_dia(&conn, &campos, Some(&motor), hoy).unwrap(), 0);
+    assert_eq!(recalcular_si_cambio_dia(&conn, &campos, None, hoy).unwrap(), 0);
+    let marcas: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mic_album WHERE clave = ?1", [CLAVE_HOY], |r| r.get(0))
+        .unwrap();
+    assert_eq!(marcas, 0);
+}
+
+#[test]
 fn query_con_filtros_y_orden_3_niveles() {
     let (db, _d) = album_tmp();
     let mut conn = db.conn().unwrap();
@@ -240,6 +402,7 @@ fn query_con_filtros_y_orden_3_niveles() {
             },
         ],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };
@@ -276,6 +439,7 @@ fn query_con_filtros_y_orden_3_niveles() {
         busqueda: None,
         orden: vec![],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };
@@ -319,6 +483,7 @@ fn fts_busca_sin_acentos() {
         busqueda: Some("cafe".into()),
         orden: vec![],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };
@@ -390,6 +555,7 @@ fn multidatos_y_conteo() {
         busqueda: None,
         orden: vec![],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };
@@ -405,6 +571,7 @@ fn multidatos_y_conteo() {
         busqueda: Some("oferta".into()),
         orden: vec![],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };
@@ -482,6 +649,7 @@ fn grupos_arbol_con_conteos() {
         busqueda: None,
         orden: vec![],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };
@@ -545,6 +713,7 @@ fn variantes_ligadas_a_principal() {
         busqueda: None,
         orden: vec![],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 10,
     };
@@ -698,6 +867,7 @@ fn bench_50k_query_filtro_orden() {
             },
         ],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };
@@ -717,4 +887,135 @@ fn bench_50k_query_filtro_orden() {
         "la consulta tardó {:?} (>100ms)",
         dur
     );
+}
+
+/// Petición base sin filtros sobre la tabla principal.
+fn req_base(condiciones: Vec<CondicionFiltro>, excluidos: Vec<i64>) -> QueryReq {
+    QueryReq {
+        tabla: Tabla::Principal,
+        id_principal: None,
+        grupo: None,
+        filtro_rapido: None,
+        condiciones,
+        busqueda: None,
+        orden: vec![],
+        incluir_ocultos: false,
+        excluidos,
+        offset: 0,
+        limit: 100,
+    }
+}
+
+fn cond(op_rel: Option<OpRel>, campo: &str, valor: &str) -> CondicionFiltro {
+    CondicionFiltro {
+        op_rel,
+        campo: campo.into(),
+        op_comp: OpComp::Igual,
+        valor: valor.into(),
+    }
+}
+
+#[test]
+fn excluidos_manuales_quitan_registros_de_consulta_totales_y_masivo() {
+    let (db, _d) = album_tmp();
+    let mut conn = db.conn().unwrap();
+    repo_campos::crear(&conn, &campo("Categoria", TipoCampo::Texto)).unwrap();
+    repo_campos::crear(&conn, &campo("Precio", TipoCampo::Numerico)).unwrap();
+    let campos = repo_campos::listar(&conn).unwrap();
+
+    let mut ids = Vec::new();
+    for (cat, precio) in [("A", 1.0), ("A", 2.0), ("A", 3.0), ("B", 4.0)] {
+        let mut v: Valores = HashMap::new();
+        v.insert("Categoria".into(), val_txt(cat));
+        v.insert("Precio".into(), val_num(precio));
+        ids.push(
+            repo_registros::crear(
+                &mut conn,
+                &campos,
+                None,
+                Tabla::Principal,
+                &v,
+                &HashMap::new(),
+                None,
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+    }
+
+    // Sin excluidos: 3 de categoría A.
+    let filtro = vec![cond(None, "Categoria", "A")];
+    let page = repo_registros::query(&conn, &campos, &req_base(filtro.clone(), vec![])).unwrap();
+    assert_eq!(page.total, 3);
+
+    // Quitando dos de ellos (y uno que ni siquiera cumple el filtro).
+    let req = req_base(filtro, vec![ids[0], ids[2], ids[3]]);
+    let page = repo_registros::query(&conn, &campos, &req).unwrap();
+    assert_eq!(page.total, 1);
+    assert_eq!(page.registros[0].id, ids[1]);
+    assert_eq!(repo_registros::ids_de_query(&conn, &campos, &req).unwrap(), vec![ids[1]]);
+    assert_eq!(repo_registros::totalizar(&conn, &campos, &req).unwrap().registros, 1);
+
+    // La actualización masiva sobre "filtro actual" solo toca el no excluido.
+    let mut nuevos: Valores = HashMap::new();
+    nuevos.insert("Precio".into(), val_num(99.0));
+    let n = repo_registros::actualizar_masivo(&mut conn, &campos, None, &req, &nuevos).unwrap();
+    assert_eq!(n, 1);
+    let todos = repo_registros::query(&conn, &campos, &req_base(vec![], vec![])).unwrap();
+    let con_99 = todos
+        .registros
+        .iter()
+        .filter(|r| r.valores.get("Precio").and_then(|v| v.como_f64()) == Some(99.0))
+        .count();
+    assert_eq!(con_99, 1);
+}
+
+#[test]
+fn orden_de_condiciones_cambia_el_resultado_con_conectores_mixtos() {
+    let (db, _d) = album_tmp();
+    let mut conn = db.conn().unwrap();
+    repo_campos::crear(&conn, &campo("Categoria", TipoCampo::Texto)).unwrap();
+    repo_campos::crear(&conn, &campo("Marca", TipoCampo::Texto)).unwrap();
+    let campos = repo_campos::listar(&conn).unwrap();
+
+    for (cat, marca) in [("A", "X"), ("A", "Y"), ("B", "X"), ("B", "Y")] {
+        let mut v: Valores = HashMap::new();
+        v.insert("Categoria".into(), val_txt(cat));
+        v.insert("Marca".into(), val_txt(marca));
+        repo_registros::crear(
+            &mut conn,
+            &campos,
+            None,
+            Tabla::Principal,
+            &v,
+            &HashMap::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    // (Categoria = A O Categoria = B) Y Marca = X → 2.
+    let antes = req_base(
+        vec![
+            cond(None, "Categoria", "A"),
+            cond(Some(OpRel::O), "Categoria", "B"),
+            cond(Some(OpRel::Y), "Marca", "X"),
+        ],
+        vec![],
+    );
+    assert_eq!(repo_registros::query(&conn, &campos, &antes).unwrap().total, 2);
+
+    // Reordenado: (Categoria = A Y Marca = X) O Categoria = B → 3.
+    let despues = req_base(
+        vec![
+            cond(None, "Categoria", "A"),
+            cond(Some(OpRel::Y), "Marca", "X"),
+            cond(Some(OpRel::O), "Categoria", "B"),
+        ],
+        vec![],
+    );
+    assert_eq!(repo_registros::query(&conn, &campos, &despues).unwrap().total, 3);
 }

@@ -47,6 +47,8 @@ export interface AlbumMock {
   proximoId: number;
   proximoCampoId: number;
   proximoGrupoId: number;
+  /** Fecha ISO del último recálculo de `@HOY` (clave `hoy_recalculado`). */
+  hoyRecalculado?: string;
 }
 
 /** Generador congruencial lineal — determinista entre recargas. */

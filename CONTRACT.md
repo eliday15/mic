@@ -28,9 +28,11 @@ Convención invoke: nombres de comando en snake_case; argumentos desde JS en cam
 `Plantilla = { nombre: string, campos: CampoNuevo[] }` (ex plantillas .xms del frmNuevo)
 
 `AlbumInfo = { albumId, ruta, nombre, totalRegistros, tieneVariantes, campos: CampoDef[] }`
-`CampoDef = { id, nombre, colFisica, tabla: 'principal'|'variantes', tipo: 'texto'|'numerico'|'moneda'|'fecha'|'calculado'|'multidato', decimales, totalizable, formula: string|null, visible, modificable, ordenVisible, formato: 'moneda'|'porcentaje'|null }`
+`CampoDef = { id, nombre, colFisica, tabla: 'principal'|'variantes', tipo: 'texto'|'numerico'|'moneda'|'fecha'|'calculado'|'multidato', decimales, totalizable, formula: string|null, visible, modificable, ordenVisible, formato: 'moneda'|'porcentaje'|'fecha'|null }`
 
 `formato` es SOLO presentación (aplica a número y calculado; el dato sigue REAL): `'porcentaje'` muestra `12.50 %`, `'moneda'` muestra `$12.50`. `decimales` controla el redondeo de presentación (por defecto 2). Columna `campos.formato` añadida por migración idempotente al abrir álbumes previos.
+
+**Fechas en calculados.** Las fechas se reducen a días desde 1900-01-01: `Fin - Inicio` = días entre fechas; `Fecha + 30` / `Fecha - 7` = días desplazados; `@HOY` (o `@HOY()`) = hoy; `@FECHA(campo)` como en VB6. Un campo Fecha vacío en la fórmula deja el resultado vacío (`null`); un numérico vacío sigue valiendo 0. `formato: 'fecha'` (solo calculados) es el **tipo de resultado**: el valor se devuelve y persiste como texto ISO `YYYY-MM-DD` (ordena/filtra como un campo fecha; no totaliza). Crear/editar un calculado recalcula el álbum. `@HOY` queda fijado al guardar o al recalcular (`album_recalcular`); además `album_abrir` recalcula una vez al día SOLO los calculados cuya fórmula expandida usa `@HOY` (marca `hoy_recalculado` en `mic_album`; solo reescribe filas que cambian, por lotes; sin `@HOY` no hace nada).
 
 ### Campos (estructura del álbum)
 | Comando | Args | Retorna |
@@ -40,7 +42,7 @@ Convención invoke: nombres de comando en snake_case; argumentos desde JS en cam
 | `campo_editar` | `{ albumId, campoId, def: CampoNuevo }` | `CampoDef` |
 | `campo_eliminar` | `{ albumId, campoId }` | `void` |
 | `campos_reordenar` | `{ albumId, orden: number[] }` | `void` (ids en orden visible) |
-| `formula_probar` | `{ albumId, formula: string, valores: Valores }` | `Valor` (vista previa editor fórmulas) |
+| `formula_probar` | `{ albumId, formula: string, valores: Valores, formato?: 'fecha'\|'moneda'\|'porcentaje'\|null }` | `Valor` (vista previa editor fórmulas; `formato:'fecha'` → fecha ISO) |
 
 ### Registros (grilla virtual / tabla)
 | Comando | Args | Retorna |
@@ -57,7 +59,8 @@ Convención invoke: nombres de comando en snake_case; argumentos desde JS en cam
 | `registros_actualizar_masivo` | `{ albumId, req: QueryReq, valores: Valores }` | `number` (registros tocados; ex frmActGrlDat) |
 | `registros_crear_desde_carpeta` | `{ albumId, carpeta: string }` | `number` (registros creados; ex "Imagenes de Dir"; progreso vía `carpeta-progreso`) |
 
-`QueryReq = { tabla, idPrincipal?, grupo?: SeleccionGrupo, filtroRapido?: {campo,valor}, condiciones: CondicionFiltro[], busqueda?, orden: {campo,direccion:'asc'|'desc'}[], incluirOcultos?: boolean, offset, limit }`
+`QueryReq = { tabla, idPrincipal?, grupo?: SeleccionGrupo, filtroRapido?: {campo,valor}, condiciones: CondicionFiltro[], busqueda?, orden: {campo,direccion:'asc'|'desc'}[], incluirOcultos?: boolean, excluidos?: number[], offset, limit }`
+`excluidos` = ids quitados a mano del resultado ("Quitar del filtro"): `_id_ NOT IN` sobre la consulta, así que total, exportar, imprimir, totalizar y actualización masiva los respetan. `condiciones` es la lista apilable de filtros libres: su orden importa (evaluación izquierda→derecha sin precedencia Y/O).
 `QueryPage = { total, offset, registros: RegistroLigero[] }`
 `RegistroLigero = { id, imagen, imagenVersion, tieneVariantes, oculto: boolean, valores: Record<string, null|string|number|boolean> }`
 `Totales = { registros: number, totales: { campo: string, suma: number }[] }`
@@ -105,12 +108,13 @@ Respeta filtro/orden de `req` (ignora offset/limit). Multidatos unidos con `" | 
 | Comando | Args (JS) | Retorna |
 |---|---|---|
 | `importar_inspeccionar` | `{ albumId, rutaArchivo: string }` | `InspeccionImport` |
-| `importar_registros` | `{ albumId, rutaArchivo: string, campoLlave: string, politica: 'sustituir'\|'mantener'\|'rellenar_vacios', crearFaltantes: boolean, dryRun: boolean, huella?: string }` | `ResultadoImportacion` |
+| `importar_registros` | `{ albumId, rutaArchivo: string, campoLlave: string, columnaLlave?: string, politica: 'sustituir'\|'mantener'\|'rellenar_vacios', crearFaltantes: boolean, importarExtras?: boolean, dryRun: boolean, huella?: string }` | `ResultadoImportacion` |
 
-`InspeccionImport = { columnas: string[], totalFilas: number, encoding: 'utf-8'|'utf-8-bom'|'windows-1252', formato: 'csv'|'xlsx', columnasReconocidas: string[], columnasNoReconocidas: string[], camposLlaveSugeridos: string[], huella: string }`
-`ResultadoImportacion = { actualizados: number, creados: number, sinCambio: number, errores: string[], avisos: string[], dryRun: boolean }`
+`InspeccionImport = { columnas: string[], totalFilas: number, encoding: 'utf-8'|'utf-8-bom'|'windows-1252', formato: 'csv'|'xlsx', columnasReconocidas: string[], columnasNoReconocidas: string[], camposLlaveSugeridos: string[], camposLlaveAlbum: string[], columnasExtra: ColumnaExtra[], huella: string }`
+`ResultadoImportacion = { actualizados: number, creados: number, sinCambio: number, coincidentes: number, noCoincidentes: ListaFilas, omitidos: number, llavesVacias: ListaFilas, llavesDuplicadas: ListaFilas, columnasExtra: ColumnaExtra[], camposCreados: string[], errores: string[], avisos: string[], dryRun: boolean }`
+`ListaFilas = { total: number, filas: { fila: number, llave: string }[] }` (`fila` base 1 contando el encabezado; detalle truncado a 500, `total` completo) · `ColumnaExtra = { columna: string, tipo: TipoCampo, decimales: number }`
 
-Lee CSV (UTF-8 con/sin BOM o Windows-1252 autodetectado; también el `csv-mic` propio) o XLSX (primera hoja, crate calamine). Casa columnas con campos del álbum por nombre case-insensitive e independiente del orden; columnas no reconocidas se ignoran (aviso). El `campoLlave` (default: primera columna) nunca se actualiza y distingue mayúsculas/acentos; los campos calculados se recalculan (no se importan); multidato se parte por "|". Duplicados de llave DENTRO del archivo → se usa la primera fila y se avisa. `dryRun:true` analiza sin escribir y devuelve el resumen previo; `dryRun:false` aplica todo. `politica` decide en colisión de llave: `sustituir` (sobrescribe), `mantener` (no toca el registro), `rellenar_vacios` (solo escribe campos hoy vacíos/null). `crearFaltantes` da de alta llaves no encontradas (sin imagen). `huella` (largo+mtime de la inspección) se valida al aplicar: si el archivo cambió, devuelve error. Emite `importacion-progreso`. Solo tabla principal.
+Lee CSV (UTF-8 con/sin BOM o Windows-1252 autodetectado; también el `csv-mic` propio) o XLSX (primera hoja, crate calamine). Casa columnas con campos del álbum por nombre case-insensitive e independiente del orden; columnas no reconocidas se ignoran (aviso). Llave de importación = `campoLlave` (campo del álbum) ↔ `columnaLlave` (columna del archivo; default: la homónima del campo); nunca se actualiza y distingue mayúsculas/acentos. Cada fila sin coincidencia se reporta en `noCoincidentes` (`coincidentes` cuenta las que casan); llaves vacías → `llavesVacias` (omitidas); los campos calculados se recalculan (no se importan); multidato se parte por "|". Duplicados de llave DENTRO del archivo → se usa la primera fila y se listan en `llavesDuplicadas`. `dryRun:true` analiza sin escribir y devuelve el resumen previo; `dryRun:false` aplica todo. `politica` decide en colisión de llave: `sustituir` (sobrescribe), `mantener` (no toca el registro), `rellenar_vacios` (solo escribe campos hoy vacíos/null). `crearFaltantes` da de alta las filas sin coincidencia (sin imagen); si es `false` se omiten (`omitidos`). Columnas extra = sin campo de ese nombre en ninguna tabla (≠ columna llave); su tipo se infiere (numérico si todos los valores son números —cero a la izquierda fuerza texto—, fecha si todos son fechas, si no texto). `importarExtras:true` crea esos campos ANTES de aplicar (y refresca campos+motor del álbum) e importa sus valores; en dry-run solo los lista en `camposCreados` sin crearlos. Sin `importarExtras` se ignoran (aviso). `huella` (largo+mtime de la inspección) se valida al aplicar: si el archivo cambió, devuelve error. Emite `importacion-progreso`. Solo tabla principal.
 
 ### Reportes (impresión)
 | Comando | Args | Retorna |
@@ -129,11 +133,13 @@ El render y la impresión son del frontend (HTML + `@media print` + `window.prin
 | `ligados_listar` | `{ albumId }` | `Liga[]` |
 | `liga_guardar` | `{ albumId, liga: Liga }` | `number` (id; id=0 → crear) |
 | `liga_eliminar` | `{ albumId, ligaId }` | `void` |
+| `liga_inspeccionar` | `{ albumId, rutaAlbum }` | `InspeccionLiga` |
 | `liga_actualizar` | `{ albumId, ligaId }` | `ResultadoLiga` |
 | `ligas_actualizar_todas` | `{ albumId }` | `ResultadoLiga[]` |
 
-`Liga = { id, rutaAlbum, llave, crearFaltantes }` · `ResultadoLiga = { actualizados, creados, sinCoincidencia }`
-Sincroniza DESDE otro `.micdb` HACIA el actual por campo llave (tabla principal); copia campos con nombre común (salvo llave/calculados, que se recalculan); `crearFaltantes` da de alta llaves nuevas. Persistido en `ligados.config_json`. Ex frmAlbumsL/frmEdligado/frmstligas.
+`Liga = { id, rutaAlbum, llave, crearFaltantes, fotos: 'actual'|'ligado', importarCamposNuevos }` · `ResultadoLiga = { actualizados, creados, sinCoincidencia, fotosCopiadas, camposCreados: string[] }`
+`InspeccionLiga = { camposComunes: string[], camposSoloLigado: string[], camposNoImportables: string[], totalRegistros, conImagen }` (vista previa del formulario; `camposNoImportables` = calculados/multidatos solo del ligado)
+Sincroniza DESDE otro `.micdb` HACIA el actual por campo llave (tabla principal); copia campos con nombre común (salvo llave/calculados, que se recalculan); `crearFaltantes` da de alta llaves nuevas. Fotos: si el registro actual no tiene foto (o su archivo no existe) y el ligado sí, se copia a `imagenes/` del actual siempre (también en altas); si ambos tienen, `fotos` decide (`actual` por defecto). `importarCamposNuevos` crea en el actual los campos escalares que solo existen en el ligado (mismo tipo/decimales) y copia sus valores; refresca campos + motor del álbum abierto (el frontend recarga `campos_listar` si `camposCreados` no está vacío). Ligar un álbum consigo mismo es error. Persistido en `ligados.config_json` (claves nuevas con default: las ligas viejas siguen cargando). Ex frmAlbumsL/frmEdligado/frmstligas.
 
 ### Migración
 | Comando | Args | Retorna |

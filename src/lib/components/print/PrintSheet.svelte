@@ -4,7 +4,10 @@
   Dos modos (ex clsReporteCI / clsReporteSI del VB6):
     - "ci": catálogo con imágenes (cuadrícula de N por línea, campos debajo).
     - "si": tabla densa; con `agrupacion` agrupa filas con subtotales por grupo
-      y, si `ponTotales`, totales generales al final.
+      y, si `ponTotales`, una fila de totales alineada a las columnas.
+  En ambos modos, `ponTotales` añade al final un bloque de totales con el número
+  de registros y la suma de TODOS los campos totalizables del álbum, se impriman
+  o no como columna.
 
   La hoja se imprime con window.print() del webview. Mientras la clase
   print-sheet--imprimiendo esté presente, un bloque de estilo inyectado en el
@@ -13,7 +16,13 @@
 -->
 <script lang="ts">
   import { thumbUrl } from "$lib/ipc/thumbnails";
-  import { formatearPorTipo, formatearFecha, hoyIso } from "$lib/utils/format";
+  import {
+    formatearPorTipo,
+    formatearEntero,
+    formatearFecha,
+    hoyIso,
+    esCampoFecha,
+  } from "$lib/utils/format";
   import { t } from "$lib/i18n/es";
   import { papelCss } from "./tipos";
   import type {
@@ -58,16 +67,27 @@
       .filter((c): c is CampoDef => c !== undefined),
   );
 
-  // True si el campo es de alineación derecha (numérico).
+  // True si el campo es de alineación derecha (numérico). Un calculado con
+  // resultado fecha no es numérico (ni se totaliza).
   function esNum(c: CampoDef): boolean {
     return (
-      c.tipo === "numerico" || c.tipo === "moneda" || c.tipo === "calculado"
+      c.tipo === "numerico" ||
+      c.tipo === "moneda" ||
+      (c.tipo === "calculado" && !esCampoFecha(c))
     );
   }
 
   // Campos totalizables entre los impresos (numéricos/moneda totalizables).
   const totalizables = $derived(
     camposImpr.filter((c) => c.totalizable && esNum(c)),
+  );
+
+  // Todos los totalizables de la tabla del reporte, en su orden visible.
+  const totalizablesAlbum = $derived(
+    campos
+      .filter((c) => c.tabla === tabla && c.totalizable && esNum(c))
+      .slice()
+      .sort((a, b) => a.ordenVisible - b.ordenVisible),
   );
 
   const titulo = $derived(config.titulo.trim() || nombreAlbum);
@@ -100,6 +120,22 @@
   function fmtSuma(c: CampoDef, valor: number): string {
     return formatearPorTipo(valor, c.tipo, c.decimales, c.formato);
   }
+
+  // Ancho relativo de cada columna de la tabla (layout fijo al ancho del
+  // papel): el texto libre recibe algo más de espacio que números y fechas,
+  // pero estos conservan lo suficiente para no partirse.
+  function pesoColumna(c: CampoDef): number {
+    if (c.tipo === "texto") return 1.5;
+    if (c.tipo === "multidato") return 1.3;
+    return 1.2;
+  }
+  const pesoTotal = $derived(camposImpr.reduce((acc, c) => acc + pesoColumna(c), 0) || 1);
+
+  // Columna donde va la etiqueta "Subtotal"/"Total": la primera sin suma (si
+  // la primera columna es totalizable, la etiqueta no debe pisar su valor).
+  const colEtiqueta = $derived(
+    camposImpr.findIndex((c) => !totalizables.some((x) => x.id === c.id)),
+  );
 
   /** Campo totalizable que corresponde a una columna (o null). */
   function totalDeColumna(c: CampoDef): CampoDef | null {
@@ -211,18 +247,18 @@
       {/each}
     </div>
 
-    {#if config.ponTotales && totalizables.length > 0}
-      <div class="ps__totales">
-        {#each totalizables as c (c.id)}
-          <span class="ps__total">
-            {c.nombre}: <strong>{fmtSuma(c, suma(registros, c))}</strong>
-          </span>
-        {/each}
-      </div>
-    {/if}
   {:else}
     <!-- Tabla densa sin imágenes -->
-    <table class="ps__tabla">
+    <table
+      class="ps__tabla"
+      class:ps__tabla--densa={camposImpr.length > 8}
+      class:ps__tabla--muy-densa={camposImpr.length > 11}
+    >
+      <colgroup>
+        {#each camposImpr as c (c.id)}
+          <col style:width="{(pesoColumna(c) / pesoTotal) * 100}%" />
+        {/each}
+      </colgroup>
       <thead>
         <tr>
           {#each camposImpr as c (c.id)}
@@ -256,7 +292,7 @@
                   >
                     {#if tot}
                       {fmtSuma(tot, suma(g.registros, tot))}
-                    {:else if i === 0}
+                    {:else if i === colEtiqueta}
                       Subtotal
                     {/if}
                   </td>
@@ -282,8 +318,8 @@
               <td class="ps__td ps__td--total" class:ps__td--num={tot !== null}>
                 {#if tot}
                   {fmtSuma(tot, suma(registros, tot))}
-                {:else if i === 0}
-                  Total
+                {:else if i === colEtiqueta}
+                  {t.reportes.total}
                 {/if}
               </td>
             {/each}
@@ -291,6 +327,27 @@
         </tfoot>
       {/if}
     </table>
+  {/if}
+
+  {#if config.ponTotales}
+    <section class="ps__totales" aria-label={t.reportes.totales}>
+      <h2 class="ps__totales-titulo">{t.reportes.totales}</h2>
+      <dl class="ps__totales-lista">
+        <div class="ps__total">
+          <dt>{t.reportes.totalRegistros}</dt>
+          <dd>{formatearEntero(registros.length)}</dd>
+        </div>
+        {#each totalizablesAlbum as c (c.id)}
+          <div class="ps__total">
+            <dt>{c.nombre}</dt>
+            <dd>{fmtSuma(c, suma(registros, c))}</dd>
+          </div>
+        {/each}
+      </dl>
+      {#if totalizablesAlbum.length === 0}
+        <p class="ps__totales-nota">{t.reportes.sinTotalizables}</p>
+      {/if}
+    </section>
   {/if}
 </div>
 
@@ -407,21 +464,67 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* --- Bloque de totales (ambos modos) --- */
   .ps__totales {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8mm;
     margin-top: 6mm;
     padding-top: 3mm;
     border-top: 1.5px solid #111;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .ps__totales-titulo {
+    margin: 0 0 2mm;
     font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .ps__totales-lista {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3mm 10mm;
+    margin: 0;
+  }
+  .ps__total {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .ps__total dt {
+    font-size: 10px;
+    color: #555;
+  }
+  .ps__total dd {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .ps__totales-nota {
+    margin: 2mm 0 0;
+    font-size: 10px;
+    color: #666;
   }
 
   /* --- Tabla densa --- */
+  /* Layout fijo: la tabla nunca rebasa el ancho del papel; el texto largo se
+     parte en varias líneas en lugar de desbordar. */
   .ps__tabla {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 10px;
+  }
+  .ps__tabla--densa {
+    font-size: 8.5px;
+  }
+  .ps__tabla--muy-densa {
+    font-size: 7.5px;
+  }
+  .ps__tabla--densa .ps__th,
+  .ps__tabla--densa .ps__td {
+    padding: 2px 3px;
   }
   .ps__th {
     padding: 2px 6px;
@@ -429,6 +532,8 @@
     font-weight: 700;
     border-bottom: 1.5px solid #111;
     background: #f4f4f4;
+    vertical-align: bottom;
+    overflow-wrap: anywhere;
   }
   .ps__th--num {
     text-align: right;
@@ -436,7 +541,8 @@
   .ps__td {
     padding: 2px 6px;
     border-bottom: 0.5px solid #ddd;
-    white-space: nowrap;
+    vertical-align: top;
+    overflow-wrap: anywhere;
   }
   .ps__td--num {
     text-align: right;

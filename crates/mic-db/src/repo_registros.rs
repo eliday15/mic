@@ -26,7 +26,7 @@ fn campos_de(campos: &[CampoDef], tabla: Tabla) -> Vec<&CampoDef> {
 }
 
 /// Convierte un [`ValueRef`] de SQLite en un [`Valor`] del dominio según el tipo.
-fn valor_desde_sql(vr: ValueRef, tipo: TipoCampo) -> Valor {
+pub(crate) fn valor_desde_sql(vr: ValueRef, tipo: TipoCampo) -> Valor {
     match vr {
         ValueRef::Null => Valor::Nulo(None),
         ValueRef::Integer(i) => match tipo {
@@ -42,15 +42,22 @@ fn valor_desde_sql(vr: ValueRef, tipo: TipoCampo) -> Valor {
 
 /// Convierte un [`Valor`] del dominio al [`SqlValue`] para persistir, según el
 /// tipo del campo destino. Reglas suaves (paridad relajada con `CvrteCmps`):
-/// - numérico/moneda/calculado: intenta f64; texto no numérico → NULL.
+/// - numérico/moneda: intenta f64; texto no numérico → NULL.
+/// - calculado: número → REAL; resultado fecha (`formato = 'fecha'`, llega
+///   como texto ISO) → TEXT, de modo que ordena y filtra como un campo fecha.
 /// - fecha: guarda la fecha ISO (primeros 10 caracteres del texto).
 /// - texto: representación textual.
-fn valor_a_sql(valor: &Valor, tipo: TipoCampo) -> SqlValue {
+pub(crate) fn valor_a_sql(valor: &Valor, tipo: TipoCampo) -> SqlValue {
     if valor.es_nulo() {
         return SqlValue::Null;
     }
     match tipo {
-        TipoCampo::Numerico | TipoCampo::Moneda | TipoCampo::Calculado => {
+        TipoCampo::Calculado => match (valor.como_f64(), valor) {
+            (Some(n), _) => SqlValue::Real(n),
+            (None, Valor::Texto(t)) => SqlValue::Text(t.chars().take(10).collect()),
+            (None, _) => SqlValue::Null,
+        },
+        TipoCampo::Numerico | TipoCampo::Moneda => {
             match valor.como_f64() {
                 Some(n) => SqlValue::Real(n),
                 None => SqlValue::Null,
@@ -627,6 +634,7 @@ pub fn variantes_de(
         orden: Vec::new(),
         // El strip de variantes del editor muestra también las ocultas.
         incluir_ocultos: true,
+        excluidos: Vec::new(),
         offset: 0,
         limit: u32::MAX,
     };
@@ -787,6 +795,8 @@ pub fn estadisticas(
                     c.tipo,
                     TipoCampo::Numerico | TipoCampo::Moneda | TipoCampo::Calculado
                 )
+                // Un calculado con resultado fecha no se totaliza.
+                && c.formato.as_deref() != Some(mic_core::calc::FORMATO_FECHA)
         })
         .collect();
 

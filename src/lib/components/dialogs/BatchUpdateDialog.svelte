@@ -1,13 +1,22 @@
 <!--
   BatchUpdateDialog — actualización masiva de un campo (equivale a
-  frmActGrlDat): elige campo, nuevo valor y alcance (selección actual, conjunto
-  filtrado o todo el álbum) y aplica el cambio en una sola operación.
+  frmActGrlDat): elige campo, nuevo valor y alcance (todos los seleccionados,
+  conjunto filtrado o todo el álbum) y aplica el cambio en una sola operación.
+  Con registros seleccionados, el alcance por defecto son los seleccionados.
 -->
 <script lang="ts">
-  import { Modal, Button, Select, TextInput, NumberInput } from "$lib/components/ui";
+  import {
+    Modal,
+    Button,
+    Select,
+    TextInput,
+    NumberInput,
+    ConfirmDialog,
+  } from "$lib/components/ui";
   import {
     registrosActualizarMasivo,
     registrosEditarLote,
+    registrosQuery,
   } from "$lib/ipc/commands";
   import { ui } from "$lib/stores/ui.svelte";
   import { t } from "$lib/i18n/es";
@@ -47,6 +56,9 @@
     estado.seleccion.size > 0 ? "seleccionados" : "filtrados",
   );
   let aplicando = $state(false);
+  // Confirmación explícita antes de VACIAR el campo en varios registros.
+  let confirmarVaciado = $state(false);
+  let afectados = $state(0);
 
   const def = $derived(editables.find((c) => c.nombre === campoSel) ?? null);
   const esNumerico = $derived(
@@ -58,15 +70,16 @@
     ...editables.map((c) => ({ valor: c.nombre, etiqueta: c.nombre })),
   ]);
 
+  const haySeleccion = $derived(estado.seleccion.size > 0);
+
+  // "Seleccionados" siempre figura; sin selección queda deshabilitada (con
+  // aviso) para que el usuario sepa que existe y cómo activarla.
   const opcionesAlcance = $derived([
-    ...(estado.seleccion.size > 0
-      ? [
-          {
-            valor: "seleccionados" as Alcance,
-            etiqueta: `${t.actMasiva.seleccionados} (${estado.seleccion.size})`,
-          },
-        ]
-      : []),
+    {
+      valor: "seleccionados" as Alcance,
+      etiqueta: `${t.actMasiva.seleccionados} (${estado.seleccion.size})`,
+      deshabilitada: !haySeleccion,
+    },
     { valor: "filtrados" as Alcance, etiqueta: t.actMasiva.filtrados },
     { valor: "todos" as Alcance, etiqueta: t.actMasiva.todos },
   ]);
@@ -77,8 +90,52 @@
     return v === "" ? null : v;
   }
 
+  // Si la selección se vacía con el diálogo abierto, no queda un alcance inválido.
+  $effect(() => {
+    if (!haySeleccion && alcance === "seleccionados") alcance = "filtrados";
+  });
+
+  /** Consulta del alcance: "filtrados" respeta la consulta activa; "todos" la ignora. */
+  function queryAlcance(): QueryReq {
+    return alcance === "filtrados"
+      ? estado.construirQuery(0, 1)
+      : {
+          tabla: estado.tabla,
+          idPrincipal: null,
+          grupo: null,
+          filtroRapido: null,
+          condiciones: [],
+          busqueda: null,
+          orden: [],
+          incluirOcultos: true,
+          offset: 0,
+          limit: 1,
+        };
+  }
+
+  /** Pide confirmación si el nuevo valor está vacío; si no, aplica directo. */
+  async function solicitarAplicar(): Promise<void> {
+    if (!def) return;
+    if (alcance === "seleccionados" && !haySeleccion) return;
+    if (valorFinal() !== null) {
+      await aplicar();
+      return;
+    }
+    try {
+      afectados =
+        alcance === "seleccionados"
+          ? estado.seleccion.size
+          : (await registrosQuery(estado.albumId, queryAlcance())).total;
+    } catch (e) {
+      ui.error(typeof e === "string" ? e : t.error.generico);
+      return;
+    }
+    confirmarVaciado = true;
+  }
+
   async function aplicar(): Promise<void> {
     if (!def) return;
+    if (alcance === "seleccionados" && !haySeleccion) return;
     aplicando = true;
     const valores = { [def.nombre]: valorFinal() };
     try {
@@ -88,23 +145,7 @@
         await registrosEditarLote(estado.albumId, ids, estado.tabla, valores);
         n = ids.length;
       } else {
-        // "filtrados" respeta la consulta activa; "todos" la ignora.
-        const req: QueryReq =
-          alcance === "filtrados"
-            ? estado.construirQuery(0, 1)
-            : {
-                tabla: estado.tabla,
-                idPrincipal: null,
-                grupo: null,
-                filtroRapido: null,
-                condiciones: [],
-                busqueda: null,
-                orden: [],
-                incluirOcultos: true,
-                offset: 0,
-                limit: 1,
-              };
-        n = await registrosActualizarMasivo(estado.albumId, req, valores);
+        n = await registrosActualizarMasivo(estado.albumId, queryAlcance(), valores);
       }
       ui.exito(`${n} ${t.actMasiva.resultado}`);
       onAplicado?.();
@@ -146,6 +187,9 @@
     <label class="am__grupo">
       <span class="am__etq">{t.actMasiva.alcance}</span>
       <Select bind:value={alcance} opciones={opcionesAlcance} />
+      {#if !haySeleccion}
+        <span class="am__pista">{t.actMasiva.sinSeleccion}</span>
+      {/if}
     </label>
 
     <p class="am__aviso">{t.actMasiva.confirmacion}</p>
@@ -155,7 +199,7 @@
     <Button variante="fantasma" onclick={cerrar}>{t.accion.cancelar}</Button>
     <Button
       variante="primario"
-      onclick={aplicar}
+      onclick={solicitarAplicar}
       disabled={!def || aplicando}
       cargando={aplicando}
     >
@@ -163,6 +207,21 @@
     </Button>
   {/snippet}
 </Modal>
+
+{#if confirmarVaciado && def}
+  <ConfirmDialog
+    bind:abierto={confirmarVaciado}
+    titulo={t.actMasiva.vaciarTitulo}
+    mensaje={t.actMasiva.vaciarMensaje(def.nombre, afectados)}
+    textoConfirmar={t.actMasiva.vaciar}
+    peligro
+    cargando={aplicando}
+    onConfirmar={async () => {
+      await aplicar();
+      confirmarVaciado = false;
+    }}
+  />
+{/if}
 
 <style>
   .am {
@@ -178,6 +237,10 @@
   .am__etq {
     font-size: var(--tam-fuente-sm);
     color: var(--color-texto-secundario);
+  }
+  .am__pista {
+    font-size: var(--tam-fuente-xs);
+    color: var(--color-texto-tenue);
   }
   .am__aviso {
     margin: 0;

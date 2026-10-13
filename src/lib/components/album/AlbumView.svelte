@@ -212,6 +212,10 @@
       case "variantes":
         abrirEditor(id);
         break;
+      case "excluir":
+        // El menú ya dejó seleccionado el registro bajo el cursor.
+        estado.excluir(estado.seleccion.size > 0 ? estado.seleccion : [id]);
+        break;
       case "eliminar":
         confirmarBorrado = true;
         break;
@@ -414,6 +418,7 @@
         tick={cacheTick}
         onRefrescar={() => cacheTick++}
         onAbrir={(id) => abrirEditor(id)}
+        onAccion={accionGrilla}
       />
     {/if}
 

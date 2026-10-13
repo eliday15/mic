@@ -4,7 +4,7 @@
   selección.
 -->
 <script lang="ts">
-  import { Search, ArrowDownUp, SlidersHorizontal, FolderTree } from "lucide-svelte";
+  import { Search, ArrowDownUp, SlidersHorizontal, FolderTree, EyeOff } from "lucide-svelte";
   import { Chip } from "$lib/components/ui";
   import { formatearEntero } from "$lib/utils/format";
   import { t } from "$lib/i18n/es";
@@ -51,7 +51,23 @@
         <Chip variante="acento" onQuitar={() => estado.setCondiciones([])}>
           <span class="sb__chiptxt">
             <SlidersHorizontal size={11} />
-            {estado.condiciones.length} {t.filtros.condicion}
+            {estado.condiciones.length}
+            {estado.condiciones.length === 1
+              ? t.filtros.condicion.toLowerCase()
+              : t.filtros.condiciones}
+          </span>
+        </Chip>
+      {/if}
+      {#if estado.excluidos.length > 0}
+        <Chip
+          variante="neutro"
+          etiquetaQuitar={t.filtros.restaurarTodos}
+          onQuitar={() => estado.restaurarExcluidos()}
+        >
+          <span class="sb__chiptxt">
+            <EyeOff size={11} />
+            {estado.excluidos.length}
+            {estado.excluidos.length === 1 ? t.filtros.quitado : t.filtros.quitados}
           </span>
         </Chip>
       {/if}

@@ -5,12 +5,22 @@
       botón "Ver 100 %" que abre un lightbox con la imagen original.
     - Derecha: DynamicForm con todos los campos + multidatos + VariantStrip.
 
-  Soporta modo creación (sin id) y edición (con id). Al guardar invoca
-  `registro_crear` o `registro_editar` y devuelve el id por `onGuardado`.
+  Soporta modo creación (sin id) y edición (con id). Autoguardado: cada dato
+  confirmado programa un guardado diferido (`registro_crear` la primera vez en
+  modo creación, `registro_editar` después) y notifica el id por `onGuardado`;
+  al cerrar o navegar a una variante se vacía lo pendiente.
 -->
 <script lang="ts">
   import { untrack } from "svelte";
-  import { ImagePlus, ImageOff, Maximize2, X, ChevronLeft } from "lucide-svelte";
+  import {
+    ImagePlus,
+    ImageOff,
+    Maximize2,
+    X,
+    ChevronLeft,
+    Check,
+    CircleAlert,
+  } from "lucide-svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { Modal, Button, Spinner } from "$lib/components/ui";
   import DynamicForm from "./DynamicForm.svelte";
@@ -59,7 +69,16 @@
   }: Props = $props();
 
   let cargando = $state(false);
-  let guardando = $state(false);
+
+  /** Estado del autoguardado, visible en el pie del editor. */
+  type EstadoGuardado = "nuevo" | "pendiente" | "guardando" | "guardado" | "error";
+  /** Espera tras el último dato confirmado antes de guardar (ms). */
+  const ESPERA_AUTOGUARDADO = 500;
+  // svelte-ignore state_referenced_locally
+  let estadoGuardado = $state<EstadoGuardado>(id === null ? "nuevo" : "guardado");
+  let temporizador: ReturnType<typeof setTimeout> | null = null;
+  // Cola de guardados: serializa crear/editar para no crear dos veces.
+  let cola: Promise<void> = Promise.resolve();
   // svelte-ignore state_referenced_locally
   let idActual = $state<number | null>(id);
   // Tabla y principal "vivos": parten de los props pero cambian al navegar a
@@ -115,9 +134,103 @@
     });
   });
 
+  /** ¿El registro nuevo tiene algo que valga la pena guardar? */
+  function hayDatos(): boolean {
+    if (imagenPendiente !== null) return true;
+    if (Object.values(valores).some((v) => v !== null && v !== "")) return true;
+    return Object.values(multidatos).some((vs) => vs.length > 0);
+  }
+
+  /** Hay texto tecleado sin confirmar: se guarda al salir del campo. */
+  function marcarEscribiendo(): void {
+    if (estadoGuardado === "guardado") estadoGuardado = "pendiente";
+  }
+
+  /** Marca cambios y programa el guardado diferido. */
+  function programarGuardado(): void {
+    estadoGuardado = "pendiente";
+    if (temporizador !== null) clearTimeout(temporizador);
+    temporizador = setTimeout(() => {
+      temporizador = null;
+      void guardarAhora();
+    }, ESPERA_AUTOGUARDADO);
+  }
+
+  /** Guarda ya lo pendiente (encolado tras cualquier guardado en curso). */
+  function guardarAhora(): Promise<void> {
+    if (temporizador !== null) {
+      clearTimeout(temporizador);
+      temporizador = null;
+    }
+    cola = cola.then(persistir);
+    return cola;
+  }
+
+  /** Copia de los calculados devueltos por el backend sin pisar lo demás. */
+  function aplicarCalculados(reg: RegistroCompleto): void {
+    const calc: Valores = {};
+    for (const c of camposTabla) {
+      if (c.tipo === "calculado") calc[c.nombre] = reg.valores[c.nombre] ?? null;
+    }
+    valores = { ...valores, ...calc };
+  }
+
+  /** Persiste el registro: lo crea la primera vez, después lo edita. */
+  async function persistir(): Promise<void> {
+    if (estadoGuardado !== "pendiente" && estadoGuardado !== "error") return;
+    if (idActual === null && !hayDatos()) {
+      estadoGuardado = "nuevo";
+      return;
+    }
+    estadoGuardado = "guardando";
+    const tablaGuardar = tablaActual;
+    const valoresGuardar = $state.snapshot(valores) as Valores;
+    const multidatosGuardar = $state.snapshot(multidatos) as Record<string, string[]>;
+    try {
+      let rid: number;
+      if (idActual === null) {
+        rid = await registroCrear(
+          albumId,
+          tablaGuardar,
+          valoresGuardar,
+          multidatosGuardar,
+          imagenPendiente ?? undefined,
+          tablaGuardar === "variantes" ? (idPrincipalActual ?? undefined) : undefined,
+        );
+        idActual = rid;
+        const conImagen = imagenPendiente !== null;
+        imagenPendiente = null;
+        const reg = await registroObtener(albumId, rid, tablaGuardar);
+        aplicarCalculados(reg);
+        if (conImagen) {
+          imagen = reg.imagen;
+          imagenVersion = reg.imagenVersion;
+        }
+        if (tablaGuardar === "principal") recargaVariantes++;
+      } else {
+        rid = idActual;
+        const reg = await registroEditar(
+          albumId,
+          rid,
+          tablaGuardar,
+          valoresGuardar,
+          multidatosGuardar,
+        );
+        aplicarCalculados(reg);
+      }
+      // Si llegaron cambios durante el guardado, siguen pendientes.
+      if (estadoGuardado === "guardando") estadoGuardado = "guardado";
+      onGuardado?.(rid);
+    } catch (e) {
+      estadoGuardado = "error";
+      ui.error(typeof e === "string" ? e : t.error.guardarRegistro);
+    }
+  }
+
   /** Entra a editar una variante existente sin salir del editor. */
-  function abrirVariante(varianteId: number): void {
+  async function abrirVariante(varianteId: number): Promise<void> {
     if (tablaActual === "variantes") return;
+    await guardarAhora();
     volverAPrincipal = idActual;
     tablaActual = "variantes";
     idPrincipalActual = idActual;
@@ -126,8 +239,9 @@
   }
 
   /** Entra a capturar una variante nueva del principal actual. */
-  function nuevaVariante(): void {
+  async function nuevaVariante(): Promise<void> {
     if (tablaActual === "variantes") return;
+    await guardarAhora();
     volverAPrincipal = idActual;
     tablaActual = "variantes";
     idPrincipalActual = idActual;
@@ -136,9 +250,11 @@
   }
 
   /** Vuelve al principal desde la edición/captura de una variante. */
-  function volverAlPrincipal(): void {
+  async function volverAlPrincipal(): Promise<void> {
     const pid = volverAPrincipal;
     if (pid === null) return;
+    await guardarAhora();
+    if (volverAPrincipal !== pid) return;
     volverAPrincipal = null;
     tablaActual = "principal";
     idPrincipalActual = null;
@@ -158,6 +274,8 @@
     multidatos = m;
     imagen = null;
     imagenVersion = null;
+    imagenPendiente = null;
+    estadoGuardado = "nuevo";
   }
 
   async function cargar(rid: number): Promise<void> {
@@ -168,6 +286,7 @@
       multidatos = { ...reg.multidatos };
       imagen = reg.imagen;
       imagenVersion = reg.imagenVersion;
+      estadoGuardado = "guardado";
     } catch (e) {
       ui.error(typeof e === "string" ? e : t.error.cargarRegistros);
     } finally {
@@ -176,11 +295,20 @@
   }
 
   function onCommitValor(nombre: string, valor: Valor): void {
+    if (valores[nombre] === valor) {
+      // Tecleó y volvió al valor original: no hay nada que guardar.
+      if (estadoGuardado === "pendiente" && temporizador === null) {
+        estadoGuardado = idActual === null ? "nuevo" : "guardado";
+      }
+      return;
+    }
     valores = { ...valores, [nombre]: valor };
+    programarGuardado();
   }
 
   function onCommitMultidato(nombre: string, vs: string[]): void {
     multidatos = { ...multidatos, [nombre]: vs };
+    programarGuardado();
   }
 
   /** Aplica una imagen a un registro ya existente. */
@@ -189,6 +317,7 @@
     await thumbInvalidar(albumId, rid, tablaActual);
     imagen = res.imagen;
     imagenVersion = res.imagenVersion;
+    onGuardado?.(rid);
   }
 
   /** Imagen pendiente de aplicar tras crear (cuando aún no hay id). */
@@ -210,55 +339,20 @@
         ui.error(typeof e === "string" ? e : t.error.cargarImagen);
       }
     } else {
+      // Sin id aún: la imagen viaja con el alta, que se dispara ya mismo.
       imagenPendiente = sel;
-      // Vista previa local mediante ruta de archivo no disponible sin asset
-      // protocol; se reflejará tras guardar. Mostramos marcador.
-      imagen = sel;
-      imagenVersion = 0;
+      programarGuardado();
     }
   }
 
-  async function guardar(): Promise<void> {
-    guardando = true;
-    try {
-      if (idActual === null) {
-        const nuevoId = await registroCrear(
-          albumId,
-          tablaActual,
-          valores,
-          multidatos,
-          imagenPendiente ?? undefined,
-          esVariante ? (idPrincipalActual ?? undefined) : undefined,
-        );
-        idActual = nuevoId;
-        imagenPendiente = null;
-        ui.exito(t.mensaje.creado);
-        onGuardado?.(nuevoId);
-        if (volverAPrincipal !== null) volverAlPrincipal();
-        else cerrar();
-      } else {
-        const reg = await registroEditar(
-          albumId,
-          idActual,
-          tablaActual,
-          valores,
-          multidatos,
-        );
-        valores = { ...reg.valores };
-        multidatos = { ...reg.multidatos };
-        ui.exito(t.mensaje.guardado);
-        onGuardado?.(idActual);
-        if (volverAPrincipal !== null) volverAlPrincipal();
-        else cerrar();
-      }
-    } catch (e) {
-      ui.error(typeof e === "string" ? e : t.error.guardarRegistro);
-    } finally {
-      guardando = false;
-    }
-  }
-
+  /**
+   * Cierra el editor vaciando lo pendiente. El campo con foco confirma su
+   * valor al perderlo (blur síncrono) antes de que el modal se desmonte; el
+   * guardado sigue en segundo plano y avisa por toast si falla.
+   */
   function cerrar(): void {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    void guardarAhora();
     abierto = false;
     onCerrar?.();
   }
@@ -338,7 +432,8 @@
       </div>
 
       <!-- Columna datos -->
-      <div class="re__datos">
+      <!-- Teclear sin confirmar aún (el guardado ocurre al salir del campo). -->
+      <div class="re__datos" oninput={marcarEscribiendo}>
         {#if esVariante && volverAPrincipal !== null}
           <button type="button" class="re__volver" onclick={volverAlPrincipal}>
             <ChevronLeft size={14} />
@@ -372,11 +467,27 @@
   {/if}
 
   {#snippet pie()}
-    <Button variante="fantasma" disabled={guardando} onclick={cerrar}>
-      {t.accion.cancelar}
-    </Button>
-    <Button variante="primario" cargando={guardando} onclick={guardar}>
-      {t.accion.guardar}
+    <span class="re__estado re__estado--{estadoGuardado}" role="status" aria-live="polite">
+      {#if estadoGuardado === "guardando"}
+        <Spinner tamano={12} />
+        {t.registro.autoguardado.guardando}
+      {:else if estadoGuardado === "guardado"}
+        <Check size={14} />
+        {t.registro.autoguardado.guardado}
+      {:else if estadoGuardado === "pendiente"}
+        {t.registro.autoguardado.pendiente}
+      {:else if estadoGuardado === "error"}
+        <CircleAlert size={14} />
+        {t.registro.autoguardado.error}
+        <button type="button" class="re__reintentar" onclick={() => void guardarAhora()}>
+          {t.registro.autoguardado.reintentar}
+        </button>
+      {:else}
+        {t.registro.autoguardado.nuevo}
+      {/if}
+    </span>
+    <Button variante="primario" onclick={cerrar}>
+      {t.accion.cerrar}
     </Button>
   {/snippet}
 </Modal>
@@ -402,6 +513,30 @@
 {/if}
 
 <style>
+  .re__estado {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--esp-1);
+    margin-right: auto;
+    font-size: var(--tam-fuente-sm);
+    color: var(--color-texto-secundario);
+  }
+  .re__estado--guardado {
+    color: var(--color-exito, var(--color-texto-secundario));
+  }
+  .re__estado--error {
+    color: var(--color-peligro, #e5484d);
+  }
+  .re__reintentar {
+    margin-left: var(--esp-1);
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--color-acento);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
   .re {
     display: grid;
     grid-template-columns: 320px 1fr;

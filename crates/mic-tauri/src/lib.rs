@@ -88,6 +88,7 @@ pub fn run() {
             commands::ligados::ligados_listar,
             commands::ligados::liga_guardar,
             commands::ligados::liga_eliminar,
+            commands::ligados::liga_inspeccionar,
             commands::ligados::liga_actualizar,
             commands::ligados::ligas_actualizar_todas,
             // Importación de registros

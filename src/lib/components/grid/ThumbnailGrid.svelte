@@ -9,9 +9,10 @@
   el editor, menú contextual y navegación por teclado (flechas, Espacio, Enter).
 -->
 <script lang="ts">
-  import { ImageOff, EyeOff, ImagePlus } from "lucide-svelte";
-  import { ContextMenu, EmptyState } from "$lib/components/ui";
-  import type { OpcionMenu } from "$lib/components/ui";
+  import { ImageOff, EyeOff } from "lucide-svelte";
+  import { ContextMenu } from "$lib/components/ui";
+  import EmptyResults from "./EmptyResults.svelte";
+  import { opcionesMenuRegistro } from "./menuRegistro";
   import type { CacheVentanas } from "$lib/utils/ventanas";
   import { thumbUrl } from "$lib/ipc/thumbnails";
   import { registroEditar } from "$lib/ipc/commands";
@@ -187,19 +188,16 @@
   // --- Menú contextual ---------------------------------------------------
   // "Ocultar" cambia a "Mostrar" cuando el registro bajo el cursor está oculto.
   let menuReg = $state<RegistroLigero | null>(null);
-  const opcionesMenu = $derived<OpcionMenu[]>([
-    { id: "editar", etiqueta: t.editar.editarRegistro },
-    { id: "ver100", etiqueta: t.ver.visor },
-    { id: "variantes", etiqueta: t.registro.variantes },
-    { id: "sep", separador: true },
-    menuReg?.oculto
-      ? { id: "mostrar", etiqueta: t.editar.mostrar }
-      : { id: "ocultar", etiqueta: t.editar.ocultar },
-    { id: "eliminar", etiqueta: t.accion.eliminar, peligro: true },
-  ]);
+  const opcionesMenu = $derived(opcionesMenuRegistro(menuReg?.oculto ?? false));
 
   function abrirMenu(e: MouseEvent, indice: number, reg: RegistroLigero): void {
     e.preventDefault();
+    // En macOS, Ctrl+clic llega como `contextmenu` con el botón primario: se
+    // trata como el Ctrl+clic de Windows (alternar selección) y no abre el menú.
+    if (e.ctrlKey && e.button === 0) {
+      clickCelda(e, indice, reg);
+      return;
+    }
     focoIndice = indice;
     if (!estado.estaSeleccionado(reg.id)) estado.seleccionarUno(reg.id);
     menuId = reg.id;
@@ -382,9 +380,7 @@
 >
   {#if total === 0}
     <div class="grid__vacio">
-      <EmptyState titulo={t.vacio.albumTitulo} descripcion={t.vacio.albumDesc}>
-        {#snippet icono()}<ImagePlus size={36} />{/snippet}
-      </EmptyState>
+      <EmptyResults {estado} />
     </div>
   {/if}
   <div class="grid__lienzo" style="height:{altoTotal}px">

@@ -249,6 +249,10 @@ pub struct QueryReq {
     /// como las imágenes "ocultas" sin eliminar del original.
     #[serde(default)]
     pub incluir_ocultos: bool,
+    /// Ids quitados manualmente del resultado ("Quitar del filtro"): se
+    /// excluyen aunque cumplan el resto de criterios.
+    #[serde(default)]
+    pub excluidos: Vec<i64>,
     pub offset: u64,
     pub limit: u32,
 }

@@ -76,12 +76,14 @@ export interface CampoDef {
   visible: boolean;
   modificable: boolean;
   ordenVisible: number;
-  /** Formato de presentación (número y calculado): moneda, porcentaje o nulo. */
+  /** Formato de presentación (número y calculado): moneda, porcentaje o nulo.
+   *  En calculados, `fecha` hace que el resultado sea una fecha ISO. */
   formato: FormatoCampo | null;
 }
 
-/** Formato de presentación de un valor numérico (solo presentación). */
-export type FormatoCampo = "moneda" | "porcentaje";
+/** Formato de presentación (moneda/porcentaje) o tipo de resultado fecha de
+ *  un calculado (`fecha`: el valor llega como ISO `YYYY-MM-DD`). */
+export type FormatoCampo = "moneda" | "porcentaje" | "fecha";
 
 /** Datos para crear/editar un campo (sin id ni colFisica, que asigna mic-db). */
 export interface CampoNuevo {
@@ -150,6 +152,8 @@ export interface QueryReq {
   orden: OrdenCampo[];
   /** Incluir registros ocultos (`_auxiliar_`); por defecto se excluyen. */
   incluirOcultos?: boolean;
+  /** Ids quitados manualmente del resultado ("Quitar del filtro"). */
+  excluidos?: number[];
   offset: number;
   limit: number;
 }

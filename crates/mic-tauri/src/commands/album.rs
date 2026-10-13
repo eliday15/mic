@@ -186,7 +186,9 @@ pub async fn album_abrir(
 
     let nuevo_handle = tokio::task::spawn_blocking(move || -> Result<AlbumHandle, String> {
         let db = AlbumDb::abrir(&ruta_pb).map_err(a_string)?;
-        AlbumHandle::nuevo(db).map_err(a_string)
+        let h = AlbumHandle::nuevo(db).map_err(a_string)?;
+        refrescar_hoy(&h);
+        Ok(h)
     })
     .await
     .map_err(|e| format!("error interno al abrir álbum: {e}"))??;
@@ -196,6 +198,27 @@ pub async fn album_abrir(
     let info = info_de(album_id, &h)?;
     promover_reciente(&app, Path::new(&info.ruta), &info.nombre);
     Ok(info)
+}
+
+/// Pone al día los calculados con `@HOY` si el álbum no se recalculó hoy
+/// (una vez al día; nada si ninguna fórmula usa `@HOY`). Solo reescribe las
+/// filas que cambian, por lotes. Un fallo se registra y no impide abrir.
+fn refrescar_hoy(h: &AlbumHandle) {
+    let resultado = h.db.conn().and_then(|conn| {
+        let campos = h.campos();
+        let motor = h.motor.read().unwrap_or_else(|e| e.into_inner());
+        mic_db::recalculo_hoy::recalcular_si_cambio_dia(
+            &conn,
+            &campos,
+            motor.as_ref(),
+            chrono::Local::now().date_naive(),
+        )
+    });
+    match resultado {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(registros = n, "calculados con @HOY puestos al día"),
+        Err(e) => tracing::error!(error = %e, "no se pudo recalcular @HOY al abrir"),
+    }
 }
 
 /// Cierra un álbum abierto (lo descarta del estado en memoria).

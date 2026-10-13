@@ -143,6 +143,7 @@ export const t = {
     titulo: "Filtros avanzados",
     rapido: "Filtro rápido",
     condicion: "Condición",
+    condiciones: "condiciones",
     agregarCondicion: "Agregar condición",
     quitarCondicion: "Quitar condición",
     campo: "Campo",
@@ -155,6 +156,18 @@ export const t = {
     sinFiltros: "No hay filtros guardados",
     activo: "Filtro activo",
     limpiarTodo: "Quitar todos los filtros",
+    libres: "Filtros libres",
+    agregarFiltro: "Agregar filtro",
+    sinActivos: "Sin filtros activos. Cada filtro que agregues se suma a los anteriores.",
+    arrastrar: "Arrastrar para reordenar (o flechas ↑ ↓)",
+    alternarConector: "Alternar conector Y / O",
+    quitarDelFiltro: "Quitar del filtro",
+    quitarSeleccion: "Quitar selección del filtro",
+    quitados: "quitados manualmente",
+    quitado: "quitado manualmente",
+    restaurar: "Restaurar",
+    restaurarTodos: "Restaurar todos",
+    registroN: "Registro",
     op: {
       igual: "igual a",
       distinto: "distinto de",
@@ -211,12 +224,20 @@ export const t = {
     campo: "Campo a actualizar",
     nuevoValor: "Nuevo valor",
     alcance: "Aplicar a",
-    seleccionados: "Solo los registros seleccionados",
+    seleccionados: "Todos los seleccionados",
+    sinSeleccion:
+      "No hay registros seleccionados: selecciónalos en la grilla o la tabla " +
+      "(clic, ⌘/Ctrl+clic o Mayús+clic) para usar esta opción.",
     filtrados: "Todos los registros del filtro actual",
     todos: "Todos los registros del álbum",
     aplicar: "Actualizar",
     confirmacion: "Esta acción modificará varios registros a la vez.",
     resultado: "registros actualizados",
+    vaciarTitulo: "¿Vaciar el campo?",
+    vaciarMensaje: (campo: string, n: number): string =>
+      `El nuevo valor está vacío: se vaciará el campo «${campo}» en ${n} ` +
+      `${n === 1 ? "registro" : "registros"}.`,
+    vaciar: "Vaciar campo",
   },
 
   copiarAlbum: {
@@ -240,12 +261,6 @@ export const t = {
 
   exportar: {
     titulo: "Exportar registros",
-    disponibles: "Campos disponibles",
-    incluidos: "Campos a exportar",
-    agregar: "Agregar →",
-    quitar: "← Quitar",
-    subir: "Subir",
-    bajar: "Bajar",
     formato: "Formato",
     csv: "CSV (texto separado por comas)",
     xlsx: "Excel (.xlsx)",
@@ -259,6 +274,21 @@ export const t = {
       "Impórtalo en el MIC 2007 con Archivo → Importar… " +
       "(las comas dentro de valores se sustituyen por espacios).",
     sinCampos: "Agrega al menos un campo para exportar",
+    campos: "Campos a exportar",
+  },
+
+  selectorCampos: {
+    buscar: "Buscar campo…",
+    todos: "Todos",
+    ninguno: "Ninguno",
+    incluidos: "Incluidos",
+    otros: "Otros campos",
+    sinResultados: "Ningún campo coincide con la búsqueda",
+    vacio: "Marca los campos que quieras incluir",
+    conteo: (n: number, total: number): string => `${n} de ${total}`,
+    arrastrar: (campo: string): string =>
+      `Reordenar ${campo}: arrastra o usa las flechas arriba/abajo`,
+    filtrando: "Borra la búsqueda para reordenar arrastrando",
   },
 
   reportes: {
@@ -295,6 +325,10 @@ export const t = {
     fecha: "Fecha",
     total: "Total",
     registros: "registros",
+    totales: "Totales",
+    totalRegistros: "Registros",
+    sinTotalizables:
+      "No hay campos totalizables en este álbum (márcalos como «Totalizable» en la estructura de campos).",
   },
 
   ligados: {
@@ -303,7 +337,30 @@ export const t = {
       "Sincroniza campos desde otro álbum usando un campo llave en común.",
     album: "Álbum ligado",
     llave: "Campo llave",
-    crearSiNoExiste: "Dar de alta el registro si la llave no existe",
+    crearSiNoExiste:
+      "Importar también los registros del otro álbum cuya llave no existe aquí",
+    importarCampos:
+      "Importar también los campos que solo existen en el otro álbum",
+    importarCamposNota:
+      "Se crean aquí con el mismo tipo y se copian sus valores, aunque las estructuras no coincidan.",
+    fotos: "Fotos",
+    fotosNota:
+      "Si un registro de este álbum no tiene foto, siempre se importa la del álbum ligado.",
+    fotosActual: "Si los dos tienen foto, conservar la del álbum actual",
+    fotosLigado: "Si los dos tienen foto, usar la del álbum ligado",
+    opciones: "Opciones",
+    badgeFaltantes: "Importa registros",
+    badgeCampos: "Importa campos",
+    badgeFotosLigado: "Fotos del ligado",
+    vistaPrevia: "Vista previa",
+    inspeccionando: "Analizando el álbum…",
+    camposComunes: "Campos que coinciden",
+    camposSoloLigado: "Solo en el álbum ligado",
+    camposNoImportables: "No se importan (calculados o multidato)",
+    ninguno: "Ninguno",
+    resumenLigado: (registros: number, fotos: number): string =>
+      `${registros} registros · ${fotos} con foto`,
+    llaveNoComun: "Este campo no existe en el álbum ligado",
     nuevo: "Nueva liga…",
     editarLiga: "Editar liga",
     eliminarLiga: "Eliminar liga",
@@ -316,6 +373,8 @@ export const t = {
       actualizados: "actualizados",
       creados: "creados",
       sinCoincidencia: "sin coincidencia",
+      fotosCopiadas: "fotos importadas",
+      camposCreados: "Campos creados",
     },
   },
 
@@ -331,14 +390,19 @@ export const t = {
     columnasNoReconocidas: "Columnas ignoradas (no coinciden con ningún campo)",
     encoding: "Codificación detectada",
     totalFilas: "Filas en el archivo",
-    campoLlave: "Campo llave (para casar registros)",
-    campoLlaveNota:
-      "El campo llave nunca se modifica y distingue mayúsculas y acentos.",
+    llaveTitulo: "Llave de importación",
+    llaveCampo: "Campo del álbum",
+    llaveColumna: "Columna del archivo",
+    llaveNota:
+      "Cada fila se casa con el registro cuyo campo tenga el mismo valor que esta columna. La llave nunca se modifica y distingue mayúsculas y acentos.",
+    extrasTitulo: "Columnas extra (no existen en el álbum)",
+    importarExtras: "Importar también las columnas extra (crear los campos)",
+    extrasNota: "Se crean como campos nuevos; el tipo se deduce de sus valores.",
+    columnasIgnoradas: "Columnas que se ignorarán",
     politica: "Al coincidir la llave",
     sustituir: "Sustituir: sobrescribir con los valores del archivo",
     mantener: "Mantener: conservar los valores actuales",
     rellenarVacios: "Rellenar vacíos: solo escribir campos hoy vacíos",
-    crearFaltantes: "Crear registros para llaves no encontradas",
     verResumen: "Ver resumen",
     // Progreso
     analizando: "Analizando…",
@@ -348,6 +412,26 @@ export const t = {
     seActualizaran: "se actualizarán",
     seCrearan: "se crearán",
     sinCambio: "sin cambio",
+    llaveResumen: (campo: string, columna: string): string =>
+      `Llave: campo «${campo}» ↔ columna «${columna}»`,
+    coinciden: (n: number): string =>
+      `${n} ${n === 1 ? "fila coincide" : "filas coinciden"} con registros existentes`,
+    noCoinciden: (n: number): string =>
+      `${n} ${n === 1 ? "fila cuya llave no coincide" : "filas cuya llave no coincide"} con ningún registro`,
+    colFila: "Fila",
+    colLlave: "Llave",
+    mostrando: (n: number, total: number): string =>
+      `Mostrando las primeras ${n} de ${total}`,
+    llavesVacias: (n: number): string =>
+      `${n} ${n === 1 ? "fila" : "filas"} con la llave vacía (se omiten)`,
+    llavesDuplicadas: (n: number): string =>
+      `${n} ${n === 1 ? "fila" : "filas"} con llave repetida en el archivo (se usa la primera)`,
+    camposACrear: "Se crearán los campos",
+    confirmarNoCoinciden: (n: number): string =>
+      `Hay ${n} ${n === 1 ? "fila cuya llave no coincide" : "filas cuya llave no coincide"}. ¿Importar de todos modos?`,
+    omitirNoCoinciden: "No: omitir esas filas e importar solo las que coinciden",
+    crearNoCoinciden: "Sí: importarlas como registros nuevos",
+    elegirOpcion: "Elige una opción para continuar.",
     avisos: "Avisos",
     errores: "Errores",
     sinAvisos: "Sin avisos",
@@ -358,6 +442,8 @@ export const t = {
     actualizados: "actualizados",
     creados: "creados",
     sinCambioRes: "sin cambio",
+    omitidos: "omitidos (llave sin coincidencia)",
+    camposCreados: "Campos creados",
   },
 
   // ----------------------------------------------------------------------
@@ -378,6 +464,14 @@ export const t = {
     calculadoSoloLectura: "Campo calculado (solo lectura)",
     multidato: "Etiquetas",
     agregarValor: "Agregar etiqueta",
+    autoguardado: {
+      guardando: "Guardando…",
+      guardado: "Guardado automáticamente",
+      pendiente: "Cambios sin guardar",
+      error: "No se pudo guardar",
+      nuevo: "Se guardará al capturar el primer dato",
+      reintentar: "Reintentar",
+    },
     seleccion: "seleccionados",
     seleccionParcial: (n: number, total: number): string =>
       `Seleccionados ${n} de ${total} (solo los registros ya cargados)`,
@@ -409,6 +503,7 @@ export const t = {
     formato: "Formato",
     formatoSimple: "Número simple",
     formatoPorcentaje: "Porcentaje (%)",
+    formatoFecha: "Fecha",
     tabla_: {
       principal: "Principal",
       variantes: "Variantes",
@@ -446,6 +541,17 @@ export const t = {
     limpiarFormula: "Limpiar fórmula",
     ayuda:
       "Arma la fórmula con clics: un campo, un operador, otro campo o número. También puedes escribirla (espacios del nombre → guion bajo).",
+    fechas: "Fechas",
+    hoy: "Hoy",
+    hoyTitulo: "Inserta @HOY: la fecha de hoy (se actualiza al recalcular)",
+    diasEntre: "Días entre fechas",
+    diasEntreTitulo: "Fecha final − fecha inicial = número de días",
+    sumarDias: "Sumar días",
+    sumarDiasTitulo: "Fecha + días = otra fecha (elige formato Fecha)",
+    ayudaFechas:
+      "Fin − Inicio da los días entre dos fechas; Fecha + 30 o Fecha − 7 da una fecha (formato Fecha); @HOY es hoy. Una fecha vacía deja el resultado vacío.",
+    ejemploHoy: "@HOY se fija al guardar o recalcular (Act. Calculados).",
+    valoresEjemplo: "con números = 1 y fechas = hoy",
   },
 
   // ----------------------------------------------------------------------
@@ -563,6 +669,9 @@ export const t = {
   vacio: {
     titulo: "Nada que mostrar",
     descripcion: "No hay elementos para esta vista.",
+    sinCoincidencias: "Ningún registro coincide con los filtros",
+    sinCoincidenciasDesc: "Prueba a quitar o cambiar alguno de los filtros activos.",
+    quitarFiltros: "Quitar filtros",
     albumTitulo: "Álbum vacío",
     albumDesc:
       "Arrastra imágenes aquí, usa Nueva Imagen (⌘I) o Herramientas → Añadir Imágenes de Carpeta.",

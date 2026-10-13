@@ -3,15 +3,30 @@
 //! Una "liga" sincroniza datos DESDE otro álbum `.micdb` HACIA el actual usando
 //! un campo llave común (ex-frmAlbumsL/frmEdligado/frmstligas del VB6). El DDL de
 //! `ligados` es genérico (`id`, `nombre`, `config_json`), así que la
-//! configuración completa de la liga (`ruta_album`, `llave`, `crear_faltantes`)
-//! se serializa como JSON en `config_json`; `nombre` guarda la ruta del álbum
-//! ligado para facilitar listados sin deserializar.
+//! configuración completa de la liga (`ruta_album`, `llave`, `crear_faltantes`,
+//! `fotos`, `importar_campos_nuevos`) se serializa como JSON en `config_json`;
+//! `nombre` guarda la ruta del álbum ligado para facilitar listados sin
+//! deserializar. Las opciones añadidas después llevan `#[serde(default)]` para
+//! que las ligas guardadas antes sigan cargando.
 
 use mic_core::error::MicError;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::pool::{err_sql, Conn};
+
+/// Qué foto conservar cuando el registro actual y el ligado tienen imagen.
+///
+/// Si el actual no tiene foto, la del ligado se importa siempre.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FuenteFotos {
+    /// Conservar la foto del álbum actual (por defecto).
+    #[default]
+    Actual,
+    /// Reemplazarla por la foto del álbum ligado.
+    Ligado,
+}
 
 /// Una liga: sincroniza datos desde `ruta_album` usando el campo `llave`.
 ///
@@ -30,15 +45,29 @@ pub struct Liga {
     /// Si la llave del ligado no existe en el actual, ¿dar de alta el registro?
     #[serde(default)]
     pub crear_faltantes: bool,
+    /// Foto a conservar cuando ambos registros tienen imagen.
+    #[serde(default)]
+    pub fotos: FuenteFotos,
+    /// Crear en el álbum actual los campos que solo existen en el ligado (mismo
+    /// tipo y decimales) y copiar sus valores.
+    #[serde(default)]
+    pub importar_campos_nuevos: bool,
 }
 
 /// Forma serializada en `config_json` (sin el `id`, que vive en la columna).
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ConfigLiga {
+    #[serde(default)]
     ruta_album: String,
+    #[serde(default)]
     llave: String,
+    #[serde(default)]
     crear_faltantes: bool,
+    #[serde(default)]
+    fotos: FuenteFotos,
+    #[serde(default)]
+    importar_campos_nuevos: bool,
 }
 
 /// Mapea una fila de `ligados` a [`Liga`], deserializando `config_json`.
@@ -48,16 +77,14 @@ fn map_liga(row: &rusqlite::Row) -> rusqlite::Result<Liga> {
     let cfg: ConfigLiga = config_json
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or(ConfigLiga {
-            ruta_album: String::new(),
-            llave: String::new(),
-            crear_faltantes: false,
-        });
+        .unwrap_or_default();
     Ok(Liga {
         id,
         ruta_album: cfg.ruta_album,
         llave: cfg.llave,
         crear_faltantes: cfg.crear_faltantes,
+        fotos: cfg.fotos,
+        importar_campos_nuevos: cfg.importar_campos_nuevos,
     })
 }
 
@@ -94,6 +121,8 @@ pub fn guardar(conn: &Conn, liga: &Liga) -> Result<i64, MicError> {
         ruta_album: liga.ruta_album.clone(),
         llave: liga.llave.clone(),
         crear_faltantes: liga.crear_faltantes,
+        fotos: liga.fotos,
+        importar_campos_nuevos: liga.importar_campos_nuevos,
     };
     let json = serde_json::to_string(&cfg)
         .map_err(|e| MicError::Invalido(format!("no se pudo serializar la liga: {e}")))?;

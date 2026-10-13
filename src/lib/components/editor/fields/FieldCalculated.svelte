@@ -6,7 +6,7 @@
 -->
 <script lang="ts">
   import { Calculator } from "lucide-svelte";
-  import { formatearNumero } from "$lib/utils/format";
+  import { formatearPorTipo } from "$lib/utils/format";
   import { formulaProbar } from "$lib/ipc/commands";
   import { debounce } from "$lib/utils/debounce";
   import type { CampoDef, Valor, Valores } from "$lib/domain/types";
@@ -35,14 +35,14 @@
 
   function texto(v: Valor): string {
     if (v === null) return "—";
-    if (typeof v === "number") return formatearNumero(v, campo.decimales);
-    return String(v);
+    // Mismo formato que grilla/tabla (moneda, %, o fecha si el resultado es fecha).
+    return formatearPorTipo(v, campo.tipo, campo.decimales, campo.formato) || String(v);
   }
 
   const evaluar = debounce(async (vals: Valores) => {
     if (!campo.formula) return;
     try {
-      previo = await formulaProbar(albumId, campo.formula, vals);
+      previo = await formulaProbar(albumId, campo.formula, vals, campo.formato);
       errorPrevio = null;
     } catch (e) {
       errorPrevio = typeof e === "string" ? e : "Error en la fórmula";

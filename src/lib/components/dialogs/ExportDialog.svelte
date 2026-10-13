@@ -1,13 +1,21 @@
 <!--
   ExportDialog — exporta el conjunto filtrado actual a CSV o XLSX (ex-frmExp del
-  VB6). UI dual-list: el usuario mueve campos entre "disponibles" e "incluidos"
-  y ordena los incluidos (Subir/Bajar). Respeta filtro y orden activos del
-  estado; el backend ignora offset/limit de la `QueryReq`.
+  VB6). Los campos se eligen y ordenan en un `FieldPicker` (casillas + arrastre).
+  Respeta filtro y orden activos del estado; el backend ignora offset/limit de
+  la `QueryReq`. La selección de campos y el formato usados al exportar se
+  recuerdan por álbum (los campos creados después entran al final, marcados).
 -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import { save } from "@tauri-apps/plugin-dialog";
-  import { Modal, Button, Select, TextInput } from "$lib/components/ui";
+  import { Modal, Button, Select, TextInput, FieldPicker } from "$lib/components/ui";
   import { exportarRegistros, type FormatoExport } from "./exportarIpc";
+  import {
+    guardarRecordado,
+    leerRecordado,
+    restaurarCampos,
+    type CamposRecordados,
+  } from "./recordarDialogo";
   import { ui } from "$lib/stores/ui.svelte";
   import { t } from "$lib/i18n/es";
   import type { AlbumState } from "$lib/stores/albumState.svelte";
@@ -20,6 +28,14 @@
 
   let { abierto = $bindable(true), estado, onCerrar }: Props = $props();
 
+  /** Lo que se recuerda por álbum entre aperturas del diálogo. */
+  interface ExportRecordado extends CamposRecordados {
+    formato: FormatoExport;
+  }
+
+  const SECCION = "exportar";
+  const FORMATOS: FormatoExport[] = ["csv", "xlsx", "csv-mic"];
+
   // Campos de la tabla activa, ordenados por ordenVisible. Se capturan al abrir
   // el diálogo (snapshot): la lista de campos no cambia mientras está abierto.
   // svelte-ignore state_referenced_locally
@@ -28,21 +44,39 @@
     .slice()
     .sort((a, b) => a.ordenVisible - b.ordenVisible);
 
-  // Incluidos arranca con los visibles (en su ordenVisible); el resto, disponibles.
+  // svelte-ignore state_referenced_locally
+  const claveAlbum = estado.ruta || estado.nombre;
+  const recordado = leerRecordado<ExportRecordado>(SECCION, claveAlbum);
+
+  const opcionesCampos = camposTabla.map((c) => ({
+    valor: c.nombre,
+    detalle: t.campos.tipos[c.tipo],
+  }));
+
+  // Incluidos: lo recordado para el álbum o, si no hay, los visibles en orden.
   let incluidos = $state<string[]>(
-    camposTabla.filter((c) => c.visible).map((c) => c.nombre),
-  );
-  let disponibles = $state<string[]>(
-    camposTabla.filter((c) => !c.visible).map((c) => c.nombre),
+    restaurarCampos(
+      recordado,
+      camposTabla.map((c) => c.nombre),
+    ) ?? camposTabla.filter((c) => c.visible).map((c) => c.nombre),
   );
 
-  // Selección activa en cada lista (un nombre por lista).
-  let selDisponible = $state<string | null>(null);
-  let selIncluido = $state<string | null>(null);
-
-  let formato = $state<FormatoExport>("csv");
+  let formato = $state<FormatoExport>(
+    recordado?.formato && FORMATOS.includes(recordado.formato) ? recordado.formato : "csv",
+  );
   let destino = $state("");
   let exportando = $state(false);
+
+  const extension = $derived(formato === "xlsx" ? "xlsx" : "csv");
+
+  // Al cambiar de formato, un destino ya escrito cambia de extensión con él.
+  $effect(() => {
+    const ext = extension;
+    const actual = untrack(() => destino);
+    const nuevo = actual.replace(/\.(csv|xlsx)$/i, `.${ext}`);
+    if (nuevo !== actual) destino = nuevo;
+  });
+
 
   const opcionesFormato = [
     { valor: "csv" as FormatoExport, etiqueta: t.exportar.csv },
@@ -50,44 +84,8 @@
     { valor: "csv-mic" as FormatoExport, etiqueta: t.exportar.csvMic },
   ];
 
-  function agregar(): void {
-    if (selDisponible === null) return;
-    const nombre = selDisponible;
-    disponibles = disponibles.filter((n) => n !== nombre);
-    incluidos = [...incluidos, nombre];
-    selDisponible = null;
-    selIncluido = nombre;
-  }
-
-  function quitar(): void {
-    if (selIncluido === null) return;
-    const nombre = selIncluido;
-    incluidos = incluidos.filter((n) => n !== nombre);
-    disponibles = [...disponibles, nombre];
-    selIncluido = null;
-    selDisponible = nombre;
-  }
-
-  function subir(): void {
-    if (selIncluido === null) return;
-    const i = incluidos.indexOf(selIncluido);
-    if (i <= 0) return;
-    const copia = [...incluidos];
-    [copia[i - 1], copia[i]] = [copia[i], copia[i - 1]];
-    incluidos = copia;
-  }
-
-  function bajar(): void {
-    if (selIncluido === null) return;
-    const i = incluidos.indexOf(selIncluido);
-    if (i < 0 || i >= incluidos.length - 1) return;
-    const copia = [...incluidos];
-    [copia[i], copia[i + 1]] = [copia[i + 1], copia[i]];
-    incluidos = copia;
-  }
-
   async function examinar(): Promise<void> {
-    const ext = formato === "xlsx" ? "xlsx" : "csv";
+    const ext = extension;
     const sel = await save({
       defaultPath: `${estado.nombre}.${ext}`,
       filters: [
@@ -106,6 +104,12 @@
       return;
     }
     if (destino.trim() === "") return;
+    // Se recuerda la configuración usada (al cancelar no se guarda nada).
+    guardarRecordado<ExportRecordado>(SECCION, claveAlbum, {
+      campos: [...incluidos],
+      conocidos: camposTabla.map((c) => c.nombre),
+      formato,
+    });
     exportando = true;
     try {
       // El backend ignora offset/limit; pasamos un rango simbólico.
@@ -134,88 +138,14 @@
 
 <Modal bind:abierto titulo={t.exportar.titulo} ancho="md" onCerrar={cerrar}>
   <div class="exp">
-    <div class="exp__listas">
-      <div class="exp__col">
-        <span class="exp__etq">{t.exportar.disponibles}</span>
-        <ul class="exp__lista" role="listbox" aria-label={t.exportar.disponibles}>
-          {#each disponibles as nombre (nombre)}
-            <li>
-              <button
-                type="button"
-                class="exp__item"
-                class:exp__item--sel={selDisponible === nombre}
-                role="option"
-                aria-selected={selDisponible === nombre}
-                onclick={() => (selDisponible = nombre)}
-                ondblclick={() => {
-                  selDisponible = nombre;
-                  agregar();
-                }}
-              >
-                {nombre}
-              </button>
-            </li>
-          {/each}
-        </ul>
-      </div>
-
-      <div class="exp__acciones">
-        <Button
-          variante="secundario"
-          onclick={agregar}
-          disabled={selDisponible === null}
-        >
-          {t.exportar.agregar}
-        </Button>
-        <Button
-          variante="secundario"
-          onclick={quitar}
-          disabled={selIncluido === null}
-        >
-          {t.exportar.quitar}
-        </Button>
-      </div>
-
-      <div class="exp__col">
-        <span class="exp__etq">{t.exportar.incluidos}</span>
-        <ul class="exp__lista" role="listbox" aria-label={t.exportar.incluidos}>
-          {#each incluidos as nombre (nombre)}
-            <li>
-              <button
-                type="button"
-                class="exp__item"
-                class:exp__item--sel={selIncluido === nombre}
-                role="option"
-                aria-selected={selIncluido === nombre}
-                onclick={() => (selIncluido = nombre)}
-                ondblclick={() => {
-                  selIncluido = nombre;
-                  quitar();
-                }}
-              >
-                {nombre}
-              </button>
-            </li>
-          {/each}
-        </ul>
-      </div>
-
-      <div class="exp__orden">
-        <Button
-          variante="fantasma"
-          onclick={subir}
-          disabled={selIncluido === null}
-        >
-          {t.exportar.subir}
-        </Button>
-        <Button
-          variante="fantasma"
-          onclick={bajar}
-          disabled={selIncluido === null}
-        >
-          {t.exportar.bajar}
-        </Button>
-      </div>
+    <div class="exp__grupo">
+      <span class="exp__etq">{t.exportar.campos}</span>
+      <FieldPicker
+        opciones={opcionesCampos}
+        bind:seleccion={incluidos}
+        etiqueta={t.exportar.campos}
+        alto="300px"
+      />
     </div>
 
     <div class="exp__campos">
@@ -227,7 +157,7 @@
       <label class="exp__grupo">
         <span class="exp__etq">{t.exportar.destino}</span>
         <div class="exp__destino">
-          <TextInput bind:value={destino} placeholder={`${estado.nombre}.csv`} />
+          <TextInput bind:value={destino} placeholder={`${estado.nombre}.${extension}`} />
           <Button variante="secundario" onclick={examinar}>
             {t.accion.examinar}
           </Button>
@@ -259,63 +189,13 @@
     flex-direction: column;
     gap: var(--esp-3);
   }
-  .exp__listas {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr auto;
-    gap: var(--esp-2);
-    align-items: stretch;
-  }
-  .exp__col {
-    display: flex;
-    flex-direction: column;
-    gap: var(--esp-1);
-    min-width: 0;
-  }
   .exp__etq {
     font-size: var(--tam-fuente-sm);
     color: var(--color-texto-secundario);
   }
-  .exp__lista {
-    list-style: none;
-    margin: 0;
-    padding: var(--esp-1);
-    height: 220px;
-    overflow-y: auto;
-    border: 1px solid var(--color-borde);
-    border-radius: var(--radio);
-    background: var(--color-superficie);
-  }
-  .exp__item {
-    display: block;
-    width: 100%;
-    padding: var(--esp-1) var(--esp-2);
-    border: none;
-    border-radius: var(--radio-sm);
-    background: transparent;
-    color: var(--color-texto);
-    text-align: left;
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .exp__item:hover {
-    background: var(--color-hover);
-  }
-  .exp__item--sel {
-    background: var(--color-acento-tenue);
-    color: var(--color-acento);
-  }
-  .exp__acciones,
-  .exp__orden {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: var(--esp-2);
-  }
   .exp__campos {
     display: grid;
-    grid-template-columns: 1fr 2fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--esp-3);
   }
   .exp__grupo {

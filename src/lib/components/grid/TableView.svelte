@@ -3,10 +3,15 @@
   ventanas de datos que la grilla (CacheVentanas). Las columnas son los campos
   visibles; el encabezado ordena por click (asc → desc → quitar). Edición de
   celda inline con Enter/Tab que confirma vía `registro_editar`. Incluye una
-  columna de miniatura pequeña.
+  columna de miniatura pequeña y un menú contextual por fila (el mismo de la
+  grilla). Un único contenedor desplaza en ambos ejes: el encabezado es sticky
+  y se mueve en horizontal junto con las filas.
 -->
 <script lang="ts">
   import { ArrowUp, ArrowDown, ImageOff } from "lucide-svelte";
+  import { ContextMenu } from "$lib/components/ui";
+  import { opcionesMenuRegistro } from "./menuRegistro";
+  import EmptyResults from "./EmptyResults.svelte";
   import type { CacheVentanas } from "$lib/utils/ventanas";
   import { thumbUrl } from "$lib/ipc/thumbnails";
   import { formatearPorTipo } from "$lib/utils/format";
@@ -26,17 +31,21 @@
     /** Solicita un re-render tras una edición local de celda. */
     onRefrescar?: () => void;
     onAbrir?: (id: number) => void;
+    /** Acción de menú contextual sobre la selección (mismos ids que la grilla). */
+    onAccion?: (accion: string, id: number) => void;
   }
 
-  let { estado, cache, tick, onRefrescar, onAbrir }: Props = $props();
+  let { estado, cache, tick, onRefrescar, onAbrir, onAccion }: Props = $props();
 
   const ALTO_FILA = 34;
   const OVERSCAN = 4;
   const ANCHO_MINI = 44;
+  const ANCHO_MIN_COL = 120;
 
   let contenedor = $state<HTMLDivElement | null>(null);
   let altoViewport = $state(0);
   let scrollTop = $state(0);
+  let altoHead = $state(0);
   // Celda en edición: `${indice}:${campoId}`.
   let editando = $state<string | null>(null);
   let textoEdicion = $state("");
@@ -44,6 +53,9 @@
   const columnas = $derived(estado.camposVisibles);
   const total = $derived(estado.total);
   const altoTotal = $derived(total * ALTO_FILA);
+  // Ancho mínimo de una fila (miniatura + columnas a su ancho mínimo): fuerza el
+  // desplazamiento horizontal cuando las columnas no caben.
+  const anchoMin = $derived(ANCHO_MINI + columnas.length * ANCHO_MIN_COL);
 
   const filaPrimera = $derived(
     Math.max(0, Math.floor(scrollTop / ALTO_FILA) - OVERSCAN),
@@ -60,6 +72,20 @@
     void estado.versionConsulta;
     if (contenedor) contenedor.scrollTop = 0;
     scrollTop = 0;
+  });
+
+  // Publica el rango realmente visible (sin overscan) para la barra de estado.
+  $effect(() => {
+    if (total === 0) {
+      estado.setRangoVisible(null);
+      return;
+    }
+    const desde = Math.min(total, Math.floor(scrollTop / ALTO_FILA) + 1);
+    const hasta = Math.min(
+      total,
+      Math.ceil((scrollTop + Math.max(0, altoViewport - altoHead)) / ALTO_FILA),
+    );
+    estado.setRangoVisible([desde, Math.max(desde, hasta)]);
   });
 
   function onScroll(): void {
@@ -80,9 +106,53 @@
     estado.alternarOrden(campo.nombre);
   }
 
-  function clickFila(e: MouseEvent, reg: RegistroLigero): void {
-    if (e.metaKey || e.ctrlKey) estado.alternarSeleccion(reg.id);
-    else estado.seleccionarUno(reg.id);
+  // Índice de la última fila clicada sin Mayús: origen de los rangos.
+  let ancla = 0;
+
+  function clickFila(e: MouseEvent, indice: number, reg: RegistroLigero): void {
+    if (e.shiftKey) {
+      seleccionarRango(ancla, indice);
+    } else if (e.metaKey || e.ctrlKey) {
+      estado.alternarSeleccion(reg.id);
+      ancla = indice;
+    } else {
+      estado.seleccionarUno(reg.id);
+      ancla = indice;
+    }
+  }
+
+  /** Selecciona las filas cargadas entre dos índices (Mayús+clic). */
+  function seleccionarRango(a: number, b: number): void {
+    const ids: number[] = [];
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) {
+      const r = cache.obtener(i);
+      if (r) ids.push(r.id);
+    }
+    estado.seleccionarVarios(ids);
+  }
+
+  // --- Menú contextual ---------------------------------------------------
+  let menu = $state<ContextMenu | null>(null);
+  let menuId: number | null = null;
+  let menuReg = $state<RegistroLigero | null>(null);
+  const opcionesMenu = $derived(opcionesMenuRegistro(menuReg?.oculto ?? false));
+
+  function abrirMenu(e: MouseEvent, indice: number, reg: RegistroLigero): void {
+    e.preventDefault();
+    // En macOS, Ctrl+clic llega como `contextmenu` con el botón primario: se
+    // trata como el Ctrl+clic de Windows (alternar selección) y no abre el menú.
+    if (e.ctrlKey && e.button === 0) {
+      clickFila(e, indice, reg);
+      return;
+    }
+    if (!estado.estaSeleccionado(reg.id)) estado.seleccionarUno(reg.id);
+    menuId = reg.id;
+    menuReg = reg;
+    menu?.abrir(e.clientX, e.clientY);
+  }
+
+  function elegirMenu(accion: string): void {
+    if (menuId !== null) onAccion?.(accion, menuId);
   }
 
   // --- Edición inline ----------------------------------------------------
@@ -156,9 +226,14 @@
   });
 </script>
 
-<div class="tabla">
-  <!-- Encabezado fijo -->
-  <div class="tabla__head" role="row">
+<div bind:this={contenedor} class="tabla" onscroll={onScroll}>
+  <!-- Encabezado fijo (sticky arriba, se desplaza en horizontal con las filas) -->
+  <div
+    class="tabla__head"
+    role="row"
+    style:min-width="{anchoMin}px"
+    bind:clientHeight={altoHead}
+  >
     <div class="tabla__celd tabla__celd--mini" style="width:{ANCHO_MINI}px"></div>
     {#each columnas as campo (campo.id)}
       <button
@@ -178,13 +253,11 @@
   </div>
 
   <!-- Cuerpo virtual -->
-  <div
-    bind:this={contenedor}
-    class="tabla__body"
-    onscroll={onScroll}
-    role="rowgroup"
-  >
-    <div class="tabla__lienzo" style="height:{altoTotal}px">
+  <div class="tabla__body" role="rowgroup">
+    {#if total === 0}
+      <EmptyResults {estado} />
+    {/if}
+    <div class="tabla__lienzo" style="height:{altoTotal}px" style:min-width="{anchoMin}px">
       {#each Array.from({ length: Math.max(0, filaUltima - filaPrimera) }) as _, fi (filaPrimera + fi)}
         {@const indice = filaPrimera + fi}
         {@const reg = registroEn(indice)}
@@ -193,6 +266,8 @@
           class:tabla__fila--sel={reg && estado.estaSeleccionado(reg.id)}
           style="transform:translateY({indice * ALTO_FILA}px)"
           role="row"
+          tabindex="-1"
+          oncontextmenu={(e) => reg && abrirMenu(e, indice, reg)}
         >
           {#if reg}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -200,7 +275,7 @@
             <div
               class="tabla__celd tabla__celd--mini"
               style="width:{ANCHO_MINI}px"
-              onclick={(e) => clickFila(e, reg)}
+              onclick={(e) => clickFila(e, indice, reg)}
               ondblclick={() => onAbrir?.(reg.id)}
             >
               {#if reg.imagen}
@@ -222,7 +297,7 @@
                 class="tabla__celd"
                 class:tabla__celd--num={campo.tipo === "numerico" || campo.tipo === "moneda"}
                 class:tabla__celd--edit={editando === clave}
-                onclick={(e) => clickFila(e, reg)}
+                onclick={(e) => clickFila(e, indice, reg)}
                 ondblclick={() => iniciarEdicion(indice, campo, reg)}
               >
                 {#if editando === clave}
@@ -257,11 +332,13 @@
   </div>
 </div>
 
+<ContextMenu bind:this={menu} opciones={opcionesMenu} onElegir={elegirMenu} />
+
 <style>
   .tabla {
-    display: flex;
-    flex-direction: column;
     height: 100%;
+    min-width: 0;
+    overflow: auto;
     background: var(--color-fondo);
   }
 
@@ -307,9 +384,9 @@
   }
 
   .tabla__body {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
+    position: relative;
+    /* Sin filas, el estado vacío ocupa el resto del alto disponible. */
+    min-height: calc(100% - var(--alto-control));
   }
 
   .tabla__lienzo {

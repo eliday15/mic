@@ -6,6 +6,7 @@
 pub mod fts;
 pub mod pool;
 pub mod query_builder;
+pub mod recalculo_hoy;
 pub mod repo_campos;
 pub mod repo_categorias;
 pub mod repo_filtros;

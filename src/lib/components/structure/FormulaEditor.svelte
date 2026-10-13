@@ -2,14 +2,16 @@
   FormulaEditor — editor de la fórmula de un campo calculado. Permite insertar
   nombres de campo en el cursor y prueba la expresión en vivo con `formula_probar`
   (debounced) usando valores de ejemplo (1 para numéricos, fecha de hoy).
+  Con `formato = "fecha"` el resultado se muestra como fecha.
 -->
 <script lang="ts">
   import { Calculator, Delete, Eraser } from "lucide-svelte";
   import { formulaProbar } from "$lib/ipc/commands";
   import { debounce } from "$lib/utils/debounce";
-  import { hoyIso, formatearNumero } from "$lib/utils/format";
+  import { hoyIso, formatearNumero, formatearFecha, esCampoFecha } from "$lib/utils/format";
   import { t } from "$lib/i18n/es";
-  import type { CampoDef, Valor, Valores } from "$lib/domain/types";
+  import FormulaAtajosFecha from "./FormulaAtajosFecha.svelte";
+  import type { CampoDef, FormatoCampo, Valor, Valores } from "$lib/domain/types";
 
   interface Props {
     albumId: number;
@@ -17,9 +19,26 @@
     formula?: string;
     /** Campos disponibles para insertar (excluye el propio si se indica). */
     campos: CampoDef[];
+    /** Formato del campo en edición (`fecha` → resultado fecha). */
+    formato?: FormatoCampo | null;
+    /** Pide cambiar el formato del campo según el atajo de fecha usado. */
+    onFormato?: (formato: FormatoCampo | null) => void;
   }
 
-  let { albumId, formula = $bindable(""), campos }: Props = $props();
+  let {
+    albumId,
+    formula = $bindable(""),
+    campos,
+    formato = null,
+    onFormato,
+  }: Props = $props();
+
+  /** "Sumar días" da una fecha; "Días entre fechas" da un número (si el
+      campo estaba en Fecha vuelve a simple; moneda/% se respetan). */
+  function ajustarFormato(tipo: "fecha" | "numero"): void {
+    if (tipo === "fecha" && formato !== "fecha") onFormato?.("fecha");
+    else if (tipo === "numero" && formato === "fecha") onFormato?.(null);
+  }
 
   let area = $state<HTMLTextAreaElement | null>(null);
   let resultado = $state<Valor>(null);
@@ -39,19 +58,19 @@
   function valoresEjemplo(): Valores {
     const v: Valores = {};
     for (const c of referenciables) {
-      v[c.nombre] = c.tipo === "fecha" ? hoyIso() : 1;
+      v[c.nombre] = esCampoFecha(c) ? hoyIso() : 1;
     }
     return v;
   }
 
-  const probar = debounce(async (expr: string) => {
+  const probar = debounce(async (expr: string, fmt: FormatoCampo | null) => {
     if (expr.trim() === "") {
       resultado = null;
       error = null;
       return;
     }
     try {
-      resultado = await formulaProbar(albumId, expr, valoresEjemplo());
+      resultado = await formulaProbar(albumId, expr, valoresEjemplo(), fmt);
       error = null;
     } catch (e) {
       error = typeof e === "string" ? e : t.formulas.error;
@@ -60,7 +79,7 @@
   }, 350);
 
   $effect(() => {
-    probar(formula);
+    probar(formula, formato);
   });
 
   /** Inserta un token en la posición del cursor (con espacios alrededor). */
@@ -116,6 +135,7 @@
 
   function vistaResultado(): string {
     if (resultado === null) return "—";
+    if (formato === "fecha") return formatearFecha(resultado) || String(resultado);
     if (typeof resultado === "number") return formatearNumero(resultado, 2);
     return String(resultado);
   }
@@ -221,6 +241,12 @@
     </div>
   </div>
 
+  <FormulaAtajosFecha
+    campos={referenciables}
+    onInsertar={insertarToken}
+    onResultado={ajustarFormato}
+  />
+
   <div class="fe__prueba" class:fe__prueba--error={error !== null}>
     <Calculator size={14} />
     {#if error !== null}
@@ -228,6 +254,7 @@
     {:else}
       <span class="fe__vista">{t.formulas.vistaPrevia}:</span>
       <span class="fe__res tabular">{vistaResultado()}</span>
+      <span class="fe__ejemplo">({t.formulas.valoresEjemplo})</span>
     {/if}
   </div>
 </div>
@@ -373,5 +400,9 @@
   .fe__res {
     color: var(--color-texto);
     font-weight: 600;
+  }
+  .fe__ejemplo {
+    font-size: var(--tam-fuente-xs);
+    color: var(--color-texto-tenue);
   }
 </style>

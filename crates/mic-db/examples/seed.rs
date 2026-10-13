@@ -245,6 +245,7 @@ fn cronometrar_consulta(
             },
         ],
         incluir_ocultos: false,
+        excluidos: Vec::new(),
         offset: 0,
         limit: 100,
     };

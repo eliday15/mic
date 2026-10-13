@@ -64,7 +64,7 @@ fn copiar_imagen(handle: &AlbumHandle, origen: &str) -> Result<String, MicError>
 
 /// Genera un nombre de archivo libre dentro de `dir`, preservando la extensión
 /// del `origen` y añadiendo un sufijo único si ya existiera uno homónimo.
-fn nombre_destino_unico(dir: &Path, origen: &Path) -> String {
+pub(crate) fn nombre_destino_unico(dir: &Path, origen: &Path) -> String {
     let stem = origen
         .file_stem()
         .and_then(|s| s.to_str())

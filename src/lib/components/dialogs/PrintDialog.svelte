@@ -2,10 +2,12 @@
   PrintDialog — diálogo de impresión / reportes (ex frmprint / frmprint2 /
   frmPreliminar del VB6). Configura un reporte con o sin imágenes, lo guarda en
   el álbum, muestra una vista previa con zoom y lo imprime con `window.print()`.
+  Los campos se eligen y ordenan con un `FieldPicker`; la configuración con la
+  que se imprime (aunque no se guarde como reporte) se recuerda por álbum.
 -->
 <script lang="ts">
   import { Eye, Printer, Save, Trash2 } from "lucide-svelte";
-  import { Modal, Button, Select, TextInput } from "$lib/components/ui";
+  import { Modal, Button, Select, TextInput, FieldPicker } from "$lib/components/ui";
   import PrintSheet from "$lib/components/print/PrintSheet.svelte";
   import {
     reportesListar,
@@ -22,6 +24,12 @@
     TipoReporte,
   } from "$lib/components/print/tipos";
   import { registrosQuery } from "$lib/ipc/commands";
+  import {
+    guardarRecordado,
+    leerRecordado,
+    restaurarCampos,
+    type CamposRecordados,
+  } from "./recordarDialogo";
   import { ui } from "$lib/stores/ui.svelte";
   import { t } from "$lib/i18n/es";
   import type { AlbumState } from "$lib/stores/albumState.svelte";
@@ -37,6 +45,10 @@
 
   /** Tope de registros a traer para el reporte (todos los filtrados). */
   const LIMITE_REPORTE = 100000;
+  const SECCION = "imprimir";
+
+  // svelte-ignore state_referenced_locally
+  const claveAlbum = estado.ruta || estado.nombre;
 
   // svelte-ignore state_referenced_locally
   let config = $state<ConfigReporte>(configInicial());
@@ -50,13 +62,37 @@
   let imprimiendo = $state(false);
   let zoom = $state(75);
 
-  /** Config inicial: campos = visibles de la tabla activa, en orden. */
+  /**
+   * Config inicial: la última usada en este álbum (autoguardada) o, si no hay,
+   * la de por defecto con los campos visibles de la tabla activa, en orden.
+   */
   function configInicial(): ConfigReporte {
     const base = configPorDefecto();
+    const imprimibles = estado.campos
+      .filter((c) => c.tabla === estado.tabla && c.tipo !== "multidato")
+      .map((c) => c.nombre);
+    const recordada = leerRecordado<ConfigReporte & CamposRecordados>(SECCION, claveAlbum);
+    if (recordada) {
+      const { conocidos: _conocidos, ...resto } = recordada;
+      const campos = restaurarCampos(recordada, imprimibles);
+      const agrupacion =
+        typeof recordada.agrupacion === "string" && imprimibles.includes(recordada.agrupacion)
+          ? recordada.agrupacion
+          : null;
+      return { ...base, ...resto, campos: campos ?? [], agrupacion };
+    }
     base.campos = estado.camposVisibles
       .filter((c) => c.tabla === estado.tabla && c.tipo !== "multidato")
       .map((c) => c.nombre);
     return base;
+  }
+
+  /** Recuerda la configuración con la que se imprime (no al cancelar). */
+  function recordarConfig(): void {
+    guardarRecordado<ConfigReporte & CamposRecordados>(SECCION, claveAlbum, {
+      ...$state.snapshot(config),
+      conocidos: camposDisponibles.map((c) => c.nombre),
+    });
   }
 
   // Campos disponibles para imprimir (no multidato, de la tabla activa).
@@ -65,6 +101,10 @@
       .filter((c) => c.tabla === estado.tabla && c.tipo !== "multidato")
       .slice()
       .sort((a, b) => a.ordenVisible - b.ordenVisible),
+  );
+
+  const opcionesCampos = $derived(
+    camposDisponibles.map((c) => ({ valor: c.nombre, detalle: t.campos.tipos[c.tipo] })),
   );
 
   // Definiciones de campos para PrintSheet.
@@ -127,24 +167,6 @@
     }
   }
 
-  /** Alterna la inclusión de un campo en el reporte, preservando el orden. */
-  function alternarCampo(nombre: string): void {
-    if (config.campos.includes(nombre)) {
-      config.campos = config.campos.filter((c) => c !== nombre);
-    } else {
-      // Inserta respetando el orden de `camposDisponibles`.
-      const orden = camposDisponibles.map((c) => c.nombre);
-      const nuevo = [...config.campos, nombre].sort(
-        (a, b) => orden.indexOf(a) - orden.indexOf(b),
-      );
-      config.campos = nuevo;
-    }
-  }
-
-  function campoIncluido(nombre: string): boolean {
-    return config.campos.includes(nombre);
-  }
-
   async function cargarRegistros(): Promise<boolean> {
     cargando = true;
     try {
@@ -170,6 +192,7 @@
       const ok = await cargarRegistros();
       if (!ok) return;
     }
+    recordarConfig();
     imprimiendo = true;
     // Espera a que el DOM aplique la clase de impresión antes de print().
     await new Promise((r) => requestAnimationFrame(() => r(null)));
@@ -246,58 +269,47 @@
         </div>
       </div>
 
-      <!-- Tipo y título -->
-      <div class="pr__fila">
-        <label class="pr__grupo">
-          <span class="pr__etq">{t.reportes.tipo}</span>
-          <Select bind:value={config.tipo} opciones={opcionesTipo} />
-        </label>
-        <label class="pr__grupo">
-          <span class="pr__etq">{t.reportes.tituloDoc}</span>
-          <TextInput
-            bind:value={config.titulo}
-            placeholder={estado.nombre}
-          />
-        </label>
-      </div>
+      <!-- Tipo y título (cada uno a todo el ancho: sus textos no se truncan) -->
+      <label class="pr__grupo">
+        <span class="pr__etq">{t.reportes.tipo}</span>
+        <Select bind:value={config.tipo} opciones={opcionesTipo} />
+      </label>
+      <label class="pr__grupo">
+        <span class="pr__etq">{t.reportes.tituloDoc}</span>
+        <TextInput bind:value={config.titulo} placeholder={estado.nombre} />
+      </label>
 
       <!-- Campos a imprimir -->
       <div class="pr__grupo">
         <span class="pr__etq">{t.reportes.camposIncluidos}</span>
-        <div class="pr__campos">
-          {#each camposDisponibles as c (c.id)}
-            <label class="pr__check">
-              <input
-                type="checkbox"
-                checked={campoIncluido(c.nombre)}
-                onchange={() => alternarCampo(c.nombre)}
-              />
-              <span>{c.nombre}</span>
-            </label>
-          {/each}
-        </div>
+        <FieldPicker
+          opciones={opcionesCampos}
+          bind:seleccion={config.campos}
+          etiqueta={t.reportes.camposIncluidos}
+          alto="230px"
+        />
       </div>
 
       <!-- Presentación -->
+      {#if config.tipo === "ci"}
+        <label class="pr__grupo">
+          <span class="pr__etq">{t.reportes.imagenesPorLinea}</span>
+          <Select
+            bind:value={config.imagenesPorLinea}
+            opciones={opcionesImgLinea}
+          />
+        </label>
+      {:else}
+        <label class="pr__grupo">
+          <span class="pr__etq">{t.reportes.agrupacion}</span>
+          <Select
+            value={config.agrupacion ?? ""}
+            opciones={opcionesAgrupacion}
+            onCambio={(v) => (config.agrupacion = v === "" ? null : v)}
+          />
+        </label>
+      {/if}
       <div class="pr__fila">
-        {#if config.tipo === "ci"}
-          <label class="pr__grupo">
-            <span class="pr__etq">{t.reportes.imagenesPorLinea}</span>
-            <Select
-              bind:value={config.imagenesPorLinea}
-              opciones={opcionesImgLinea}
-            />
-          </label>
-        {:else}
-          <label class="pr__grupo">
-            <span class="pr__etq">{t.reportes.agrupacion}</span>
-            <Select
-              value={config.agrupacion ?? ""}
-              opciones={opcionesAgrupacion}
-              onCambio={(v) => (config.agrupacion = v === "" ? null : v)}
-            />
-          </label>
-        {/if}
         <label class="pr__grupo">
           <span class="pr__etq">{t.reportes.orientacion}</span>
           <Select
@@ -357,7 +369,7 @@
         {:else}
           <div
             class="pr__escala"
-            style:transform={`scale(${zoom / 100})`}
+            style:zoom={zoom / 100}
           >
             <PrintSheet
               {config}
@@ -376,7 +388,8 @@
 
   {#snippet pie()}
     <span class="pr__conteo">
-      {registros.length}
+      <!-- Antes de la vista previa, el total del conjunto filtrado actual. -->
+      {registros.length > 0 ? registros.length : estado.total}
       {t.reportes.registros}
     </span>
     <Button variante="fantasma" onclick={cerrar}>{t.accion.cerrar}</Button>
@@ -430,16 +443,6 @@
     flex: 1;
     min-width: 120px;
   }
-  .pr__campos {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2px var(--esp-2);
-    max-height: 160px;
-    overflow-y: auto;
-    padding: var(--esp-2);
-    border: 1px solid var(--color-borde);
-    border-radius: var(--radio-sm);
-  }
   .pr__opciones {
     display: flex;
     flex-wrap: wrap;
@@ -458,6 +461,7 @@
     flex-direction: column;
     gap: var(--esp-2);
     min-width: 0;
+    max-height: 64vh;
   }
   .pr__previa-barra {
     display: flex;
@@ -485,14 +489,18 @@
   }
   .pr__lienzo {
     flex: 1;
+    min-height: 0;
     overflow: auto;
     background: var(--color-panel);
     border: 1px solid var(--color-borde);
     border-radius: var(--radio-sm);
     padding: var(--esp-3);
   }
+  /* `zoom` (no `transform`) para que la escala afecte al layout y el lienzo
+     se desplace sobre la hoja reducida sin recortarla. */
   .pr__escala {
-    transform-origin: top center;
+    width: max-content;
+    margin: 0 auto;
   }
   .pr__msg {
     margin: 0;

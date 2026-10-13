@@ -1,10 +1,15 @@
 //! Importación de registros desde CSV/XLSX (moderniza el "Importar..." del VB6,
 //! Module3.bas `ActualizaConImportado`).
 //!
-//! Casa las filas del archivo con los registros del álbum por un **campo llave**
-//! seleccionable (default: primera columna del archivo) y, según la **política**
-//! elegida, sustituye, mantiene o rellena los valores en conflicto. Las llaves
-//! no encontradas se dan de alta si `crear_faltantes`. Solo tabla principal.
+//! Casa las filas del archivo con los registros del álbum por una **llave de
+//! importación**: un campo del álbum ↔ una columna del archivo (por defecto la
+//! columna homónima del campo). Según la **política** elegida, sustituye,
+//! mantiene o rellena los valores en conflicto. Las filas cuya llave no casa con
+//! ningún registro se reportan una por una (número de fila + valor) para que el
+//! diálogo las muestre como error y pida confirmación; se dan de alta si
+//! `crear_faltantes` y se omiten si no. Las **columnas extra** (sin campo en el
+//! álbum) se ignoran, o con `importar_extras` se crean como campos nuevos (tipo
+//! inferido de sus valores) antes de aplicar. Solo tabla principal.
 //!
 //! Dos comandos:
 //! - `importar_inspeccionar`: lee el archivo y devuelve metadatos (columnas,
@@ -30,11 +35,11 @@
 //! - merge SIEMPRE sobre el registro actual completo (jamás `Valores` parcial a
 //!   `editar`, que pondría a NULL las columnas ausentes).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mic_core::calc::MotorCalculo;
 use mic_core::error::MicError;
-use mic_core::model::{CampoDef, Tabla, TipoCampo, Valor, Valores};
+use mic_core::model::{CampoDef, CampoNuevo, Tabla, TipoCampo, Valor, Valores};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -46,6 +51,51 @@ const EVENTO_PROGRESO: &str = "importacion-progreso";
 
 /// Cada cuántas filas procesadas se emite un evento de progreso.
 const PASO_PROGRESO: u64 = 50;
+
+/// Máximo de filas detalladas por lista (no coincidentes, llaves vacías o
+/// repetidas): el total se informa siempre completo; el detalle se trunca para
+/// no inflar el IPC con archivos enormes.
+const LIMITE_DETALLE: usize = 500;
+
+/// Una fila del archivo: número (base 1 contando el encabezado, como Excel) y
+/// valor de su llave.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilaLlave {
+    pub fila: u64,
+    pub llave: String,
+}
+
+/// Lista de filas con el total completo y el detalle truncado a [`LIMITE_DETALLE`].
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListaFilas {
+    pub total: u64,
+    pub filas: Vec<FilaLlave>,
+}
+
+impl ListaFilas {
+    /// Cuenta la fila y la guarda en el detalle si aún cabe.
+    fn agregar(&mut self, fila: u64, llave: &str) {
+        self.total += 1;
+        if self.filas.len() < LIMITE_DETALLE {
+            self.filas.push(FilaLlave {
+                fila,
+                llave: llave.to_string(),
+            });
+        }
+    }
+}
+
+/// Columna del archivo que no casa con ningún campo del álbum, con el tipo
+/// inferido para el campo que se crearía al importarla.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnaExtra {
+    pub columna: String,
+    pub tipo: TipoCampo,
+    pub decimales: u8,
+}
 
 /// Metadatos del archivo a importar (fase de configuración del diálogo).
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +115,11 @@ pub struct InspeccionImport {
     pub columnas_no_reconocidas: Vec<String>,
     /// Columnas reconocidas elegibles como llave (no calculado/multidato).
     pub campos_llave_sugeridos: Vec<String>,
+    /// Campos principales del álbum elegibles como llave (no calculado/multidato),
+    /// estén o no en el archivo: la columna del archivo se elige aparte.
+    pub campos_llave_album: Vec<String>,
+    /// Columnas extra (sin campo en el álbum) con el tipo inferido de sus valores.
+    pub columnas_extra: Vec<ColumnaExtra>,
     /// Huella `len:mtime` del archivo, para detectar cambios entre resumen y aplicar.
     pub huella: String,
 }
@@ -79,6 +134,21 @@ pub struct ResultadoImportacion {
     pub creados: u64,
     /// Filas que no produjeron ningún cambio.
     pub sin_cambio: u64,
+    /// Filas cuya llave casó con un registro existente.
+    pub coincidentes: u64,
+    /// Filas cuya llave NO casó con ningún registro (el diálogo lo marca como
+    /// error y pide confirmación antes de aplicar).
+    pub no_coincidentes: ListaFilas,
+    /// Filas sin coincidencia que se omitieron (sin `crear_faltantes`).
+    pub omitidos: u64,
+    /// Filas con la llave vacía (siempre se omiten).
+    pub llaves_vacias: ListaFilas,
+    /// Filas con una llave repetida dentro del archivo (se usa la primera).
+    pub llaves_duplicadas: ListaFilas,
+    /// Columnas extra detectadas, con su tipo inferido.
+    pub columnas_extra: Vec<ColumnaExtra>,
+    /// Campos creados (o que se crearían, en dry-run) para las columnas extra.
+    pub campos_creados: Vec<String>,
     /// Errores por celda/fila (no abortan el lote): mensaje con número de fila.
     pub errores: Vec<String>,
     /// Avisos globales (columnas ignoradas, calculados, llaves duplicadas...).
@@ -121,7 +191,9 @@ pub async fn importar_inspeccionar(
 /// Importa los registros del archivo al álbum.
 ///
 /// Con `dry_run=true` solo analiza y cuenta (resumen previo); con `dry_run=false`
-/// aplica los cambios. Emite `importacion-progreso` durante el proceso.
+/// aplica los cambios. `columna_llave` es la columna del archivo que se casa con
+/// `campo_llave` (default: la homónima). `importar_extras` crea campos para las
+/// columnas extra antes de aplicar. Emite `importacion-progreso` durante el proceso.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn importar_registros(
@@ -130,25 +202,23 @@ pub async fn importar_registros(
     album_id: u64,
     ruta_archivo: String,
     campo_llave: String,
+    columna_llave: Option<String>,
     politica: String,
     crear_faltantes: bool,
+    importar_extras: Option<bool>,
     dry_run: bool,
     huella: Option<String>,
 ) -> Result<ResultadoImportacion, String> {
     let h = handle(&state, album_id)?;
-    en_db(h, move |h| {
-        importar(
-            &app,
-            h,
-            &ruta_archivo,
-            &campo_llave,
-            &politica,
-            crear_faltantes,
-            dry_run,
-            huella.as_deref(),
-        )
-    })
-    .await
+    let opciones = OpcionesImport {
+        campo_llave,
+        columna_llave,
+        politica,
+        crear_faltantes,
+        importar_extras: importar_extras.unwrap_or(false),
+        dry_run,
+    };
+    en_db(h, move |h| importar(&app, h, &ruta_archivo, &opciones, huella.as_deref())).await
 }
 
 // ---------------------------------------------------------------------------
@@ -417,11 +487,16 @@ fn inspeccionar(h: &AlbumHandle, ruta: &str) -> Result<InspeccionImport, MicErro
     let mut reconocidas: Vec<String> = Vec::new();
     let mut no_reconocidas: Vec<String> = Vec::new();
     let mut sugeridas: Vec<String> = Vec::new();
+    let campos_llave_album: Vec<String> = campos
+        .iter()
+        .filter(|c| es_llave_elegible(c))
+        .map(|c| c.nombre.clone())
+        .collect();
     for col in &archivo.encabezados {
         match campo_para_columna(&campos, col) {
             Some(campo) => {
                 reconocidas.push(col.clone());
-                if !matches!(campo.tipo, TipoCampo::Calculado | TipoCampo::Multidato) {
+                if es_llave_elegible(campo) {
                     sugeridas.push(col.clone());
                 }
             }
@@ -433,6 +508,9 @@ fn inspeccionar(h: &AlbumHandle, ruta: &str) -> Result<InspeccionImport, MicErro
         FormatoArchivo::Csv => "csv",
         FormatoArchivo::Xlsx => "xlsx",
     };
+    // Sin llave elegida todavía: el diálogo descarta la columna que elija como llave.
+    let columnas_extra =
+        detectar_extras(&archivo.encabezados, &archivo.filas, &campos, None, archivo.separador);
 
     Ok(InspeccionImport {
         columnas: archivo.encabezados,
@@ -442,8 +520,86 @@ fn inspeccionar(h: &AlbumHandle, ruta: &str) -> Result<InspeccionImport, MicErro
         columnas_reconocidas: reconocidas,
         columnas_no_reconocidas: no_reconocidas,
         campos_llave_sugeridos: sugeridas,
+        campos_llave_album,
+        columnas_extra,
         huella: huella_archivo(ruta)?,
     })
+}
+
+/// ¿El campo puede servir de llave? Principal y no calculado/multidato.
+fn es_llave_elegible(campo: &CampoDef) -> bool {
+    campo.tabla == Tabla::Principal
+        && !matches!(campo.tipo, TipoCampo::Calculado | TipoCampo::Multidato)
+}
+
+/// Columnas extra del archivo: encabezado no vacío y no repetido, distinto de la
+/// columna llave y sin campo de ese nombre en NINGUNA tabla del álbum (una
+/// columna homónima de un campo de variantes se ignora: no se duplica el nombre).
+/// El tipo del campo a crear se infiere de sus valores.
+fn detectar_extras(
+    encabezados: &[String],
+    filas: &[Vec<String>],
+    campos: &[CampoDef],
+    indice_llave: Option<usize>,
+    separador: u8,
+) -> Vec<ColumnaExtra> {
+    let mut vistos: HashSet<String> = HashSet::new();
+    let mut extras: Vec<ColumnaExtra> = Vec::new();
+    for (i, col) in encabezados.iter().enumerate() {
+        let nombre = col.trim();
+        if nombre.is_empty() || !vistos.insert(nombre.to_lowercase()) || indice_llave == Some(i) {
+            continue;
+        }
+        if campos
+            .iter()
+            .any(|c| c.nombre.trim().eq_ignore_ascii_case(nombre))
+        {
+            continue;
+        }
+        let valores = filas.iter().map(|f| f.get(i).map(String::as_str).unwrap_or(""));
+        let (tipo, decimales) = inferir_tipo(valores, separador);
+        extras.push(ColumnaExtra {
+            columna: nombre.to_string(),
+            tipo,
+            decimales,
+        });
+    }
+    extras
+}
+
+/// Infiere el tipo del campo a crear para una columna extra: numérico si TODOS
+/// los valores no vacíos parsean como número (0 decimales si todos son enteros,
+/// 2 si no), fecha si todos parsean como fecha, texto en cualquier otro caso o si
+/// la columna está vacía. Un valor con cero a la izquierda (`"007"`) fuerza
+/// texto: es un código y como número perdería los ceros.
+fn inferir_tipo<'a>(valores: impl Iterator<Item = &'a str>, separador: u8) -> (TipoCampo, u8) {
+    let (mut hay_valores, mut numerico, mut enteros, mut fecha) = (false, true, true, true);
+    for valor in valores {
+        let t = valor.trim();
+        if t.is_empty() {
+            continue;
+        }
+        hay_valores = true;
+        if numerico {
+            let cero_izquierda =
+                t.len() > 1 && t.starts_with('0') && t.as_bytes()[1].is_ascii_digit();
+            match parsear_numero(t, separador) {
+                Some(n) if n.is_finite() && !cero_izquierda => enteros &= n.fract() == 0.0,
+                _ => numerico = false,
+            }
+        }
+        if fecha && parsear_fecha(t).is_none() {
+            fecha = false;
+        }
+        if !numerico && !fecha {
+            break;
+        }
+    }
+    match (hay_valores, numerico, fecha) {
+        (true, true, _) => (TipoCampo::Numerico, if enteros { 0 } else { 2 }),
+        (true, false, true) => (TipoCampo::Fecha, 0),
+        _ => (TipoCampo::Texto, 0),
+    }
 }
 
 /// Huella ligera del archivo: `len:mtime` (segundos epoch). Detecta cambios
@@ -645,6 +801,8 @@ fn clave_canonica_valor(v: &Valor, llave_numerica: bool) -> Option<String> {
 
 /// Una fila del archivo ya casada con los campos del álbum y normalizada.
 struct FilaCasada {
+    /// Número de fila en el archivo (base 1 contando el encabezado).
+    fila: u64,
     /// Clave canónica de la llave (la fila siempre tiene una).
     clave: String,
     /// Campos escalares a escribir (excluye la llave y los calculados).
@@ -661,23 +819,22 @@ struct PreparacionImport {
     campos_escritura: Vec<CampoDef>,
     /// Campos multidato del álbum presentes en el archivo.
     campos_multidato: Vec<CampoDef>,
+    /// Filas con la llave vacía (omitidas).
+    llaves_vacias: ListaFilas,
+    /// Filas con llave repetida dentro del archivo (omitidas; gana la primera).
+    llaves_duplicadas: ListaFilas,
     /// Avisos globales acumulados.
     avisos: Vec<String>,
     /// Errores por celda/fila acumulados.
     errores: Vec<String>,
 }
 
-/// Prepara las filas del archivo: valida la llave, casa columnas, normaliza
-/// valores, detecta duplicados internos y construye el índice por llave.
-fn preparar_importacion(
-    encabezados: &[String],
-    filas: &[Vec<String>],
-    campos: &[CampoDef],
+/// Busca el campo llave: debe existir, ser principal y no calculado/multidato.
+fn resolver_campo_llave<'a>(
+    campos: &'a [CampoDef],
     campo_llave: &str,
-    separador: u8,
-) -> Result<PreparacionImport, MicError> {
-    // La llave debe existir, ser principal y no calculada/multidato.
-    let campo_llave_def = campos
+) -> Result<&'a CampoDef, MicError> {
+    let campo = campos
         .iter()
         .find(|c| c.tabla == Tabla::Principal && c.nombre.eq_ignore_ascii_case(campo_llave.trim()))
         .ok_or_else(|| {
@@ -685,39 +842,62 @@ fn preparar_importacion(
                 "el campo llave '{campo_llave}' no existe en el álbum"
             ))
         })?;
-    if matches!(
-        campo_llave_def.tipo,
-        TipoCampo::Calculado | TipoCampo::Multidato
-    ) {
+    if !es_llave_elegible(campo) {
         return Err(MicError::Invalido(format!(
             "el campo llave '{}' no puede ser calculado ni multidato",
-            campo_llave_def.nombre
+            campo.nombre
         )));
     }
+    Ok(campo)
+}
+
+/// Índice de la columna llave en el archivo (case-insensitive, trim). Error si
+/// falta o si aparece repetida (no se adivina cuál usar).
+fn indice_columna_llave(encabezados: &[String], columna: &str) -> Result<usize, MicError> {
+    let mut coincidencias = encabezados
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.trim().eq_ignore_ascii_case(columna.trim()))
+        .map(|(i, _)| i);
+    let indice = coincidencias.next().ok_or_else(|| {
+        MicError::Invalido(format!(
+            "la columna llave '{columna}' no está presente en el archivo"
+        ))
+    })?;
+    if coincidencias.next().is_some() {
+        return Err(MicError::Invalido(format!(
+            "la columna llave '{columna}' aparece duplicada en el archivo"
+        )));
+    }
+    Ok(indice)
+}
+
+/// Prepara las filas del archivo: valida la llave, casa columnas, normaliza
+/// valores, detecta llaves vacías/repetidas y construye el índice por llave.
+fn preparar_importacion(
+    encabezados: &[String],
+    filas: &[Vec<String>],
+    campos: &[CampoDef],
+    campo_llave: &str,
+    columna_llave: &str,
+    separador: u8,
+) -> Result<PreparacionImport, MicError> {
+    let campo_llave_def = resolver_campo_llave(campos, campo_llave)?;
     let llave_numerica = matches!(
         campo_llave_def.tipo,
         TipoCampo::Numerico | TipoCampo::Moneda
     );
     let nombre_llave = campo_llave_def.nombre.clone();
+    let indice_llave = indice_columna_llave(encabezados, columna_llave)?;
 
     // Índice columna → campo del álbum (case-insensitive). Detecta duplicados.
     let mut avisos: Vec<String> = Vec::new();
     let mut col_a_campo: Vec<Option<CampoDef>> = Vec::with_capacity(encabezados.len());
-    let mut vistos: HashMap<String, usize> = HashMap::new();
+    let mut vistos: HashSet<String> = HashSet::new();
     let mut calculados_ignorados = false;
-    let mut indice_llave: Option<usize> = None;
 
     for (i, col) in encabezados.iter().enumerate() {
-        let clave_norm = col.trim().to_lowercase();
-        let duplicada = vistos.contains_key(&clave_norm);
-        if duplicada {
-            // Si la columna duplicada es la llave → error fatal (no se adivina).
-            if col.trim().eq_ignore_ascii_case(nombre_llave.trim()) {
-                return Err(MicError::Invalido(format!(
-                    "la columna llave '{}' aparece duplicada en el archivo",
-                    nombre_llave
-                )));
-            }
+        if !vistos.insert(col.trim().to_lowercase()) {
             avisos.push(format!(
                 "columna '{}' duplicada en el archivo: se ignoran las repetidas",
                 col
@@ -725,41 +905,40 @@ fn preparar_importacion(
             col_a_campo.push(None);
             continue;
         }
-        vistos.insert(clave_norm, i);
-
+        if i == indice_llave {
+            // La llave casa, nunca se escribe.
+            col_a_campo.push(None);
+            continue;
+        }
         match campo_para_columna(campos, col) {
-            Some(campo) => {
-                if campo.nombre.eq_ignore_ascii_case(nombre_llave.trim()) {
-                    indice_llave = Some(i);
-                    col_a_campo.push(Some(campo.clone()));
-                } else if matches!(campo.tipo, TipoCampo::Calculado) {
-                    calculados_ignorados = true;
-                    col_a_campo.push(None);
-                } else {
-                    col_a_campo.push(Some(campo.clone()));
-                }
+            Some(campo) if campo.nombre == nombre_llave => {
+                // Columna homónima del campo llave, pero la llave sale de otra.
+                avisos.push(format!(
+                    "la columna '{col}' corresponde al campo llave y se ignora (la llave se toma de '{}')",
+                    encabezados[indice_llave]
+                ));
+                col_a_campo.push(None);
             }
+            Some(campo) if matches!(campo.tipo, TipoCampo::Calculado) => {
+                calculados_ignorados = true;
+                col_a_campo.push(None);
+            }
+            Some(campo) => col_a_campo.push(Some(campo.clone())),
             None => col_a_campo.push(None),
         }
     }
 
-    let indice_llave = indice_llave.ok_or_else(|| {
-        MicError::Invalido(format!(
-            "la columna llave '{}' no está presente en el archivo",
-            nombre_llave
-        ))
-    })?;
-
-    // Columnas no reconocidas → aviso único.
-    let no_reconocidas: Vec<&String> = encabezados
+    // Columnas no reconocidas (sin contar la llave) → aviso único.
+    let no_reconocidas: Vec<&str> = encabezados
         .iter()
-        .filter(|col| campo_para_columna(campos, col).is_none())
+        .enumerate()
+        .filter(|(i, col)| *i != indice_llave && campo_para_columna(campos, col).is_none())
+        .map(|(_, col)| col.as_str())
         .collect();
     if !no_reconocidas.is_empty() {
-        let lista: Vec<&str> = no_reconocidas.iter().map(|s| s.as_str()).collect();
         avisos.push(format!(
             "columnas ignoradas (no coinciden con ningún campo): {}",
-            lista.join(", ")
+            no_reconocidas.join(", ")
         ));
     }
     if calculados_ignorados {
@@ -770,57 +949,42 @@ fn preparar_importacion(
     let mut campos_escritura: Vec<CampoDef> = Vec::new();
     let mut campos_multidato: Vec<CampoDef> = Vec::new();
     for campo in col_a_campo.iter().flatten() {
-        if campo.nombre.eq_ignore_ascii_case(nombre_llave.trim()) {
-            continue;
-        }
-        match campo.tipo {
-            TipoCampo::Multidato => {
-                if !campos_multidato.iter().any(|c| c.id == campo.id) {
-                    campos_multidato.push(campo.clone());
-                }
-            }
-            TipoCampo::Calculado => {}
-            _ => {
-                if !campos_escritura.iter().any(|c| c.id == campo.id) {
-                    campos_escritura.push(campo.clone());
-                }
-            }
+        let destino = if matches!(campo.tipo, TipoCampo::Multidato) {
+            &mut campos_multidato
+        } else {
+            &mut campos_escritura
+        };
+        if !destino.iter().any(|c| c.id == campo.id) {
+            destino.push(campo.clone());
         }
     }
 
     // Recorre las filas, normaliza y construye el índice (primera fila gana).
     let mut filas_casadas: Vec<FilaCasada> = Vec::new();
-    let mut posicion_por_clave: HashMap<String, usize> = HashMap::new();
+    let mut claves_vistas: HashSet<String> = HashSet::new();
+    let mut llaves_vacias = ListaFilas::default();
+    let mut llaves_duplicadas = ListaFilas::default();
     let mut errores: Vec<String> = Vec::new();
 
     for (idx_fila, fila) in filas.iter().enumerate() {
-        let num_fila = idx_fila + 2; // +1 por encabezado, +1 base-1 (como Excel).
+        let num_fila = idx_fila as u64 + 2; // +1 por encabezado, +1 base-1 (como Excel).
         let clave_bruta = fila.get(indice_llave).map(|s| s.as_str()).unwrap_or("");
         let clave = match clave_canonica(clave_bruta, llave_numerica) {
             Some(c) => c,
             None => {
-                errores.push(format!("fila {num_fila}: llave vacía, fila omitida"));
+                llaves_vacias.agregar(num_fila, "");
                 continue;
             }
         };
-
-        if posicion_por_clave.contains_key(&clave) {
-            avisos.push(format!(
-                "llave duplicada en el archivo: '{clave}' (se usó la primera fila)"
-            ));
+        if !claves_vistas.insert(clave.clone()) {
+            llaves_duplicadas.agregar(num_fila, &clave);
             continue;
         }
 
         let mut escalares: Valores = HashMap::new();
         let mut multidatos: HashMap<String, Vec<String>> = HashMap::new();
-        for (i, campo_opt) in col_a_campo.iter().enumerate() {
-            let campo = match campo_opt {
-                Some(c) => c,
-                None => continue,
-            };
-            if campo.nombre.eq_ignore_ascii_case(nombre_llave.trim()) {
-                continue;
-            }
+        for (i, campo) in col_a_campo.iter().enumerate() {
+            let Some(campo) = campo else { continue };
             let celda = fila.get(i).map(|s| s.as_str()).unwrap_or("");
             match normalizar_valor(celda, campo, separador) {
                 Ok(CeldaNorm::Omitir) => {}
@@ -834,8 +998,8 @@ fn preparar_importacion(
             }
         }
 
-        posicion_por_clave.insert(clave.clone(), filas_casadas.len());
         filas_casadas.push(FilaCasada {
+            fila: num_fila,
             clave,
             escalares,
             multidatos,
@@ -846,6 +1010,8 @@ fn preparar_importacion(
         filas: filas_casadas,
         campos_escritura,
         campos_multidato,
+        llaves_vacias,
+        llaves_duplicadas,
         avisos,
         errores,
     })
@@ -896,45 +1062,114 @@ fn esta_vacio_actual(v: Option<&Valor>, tipo: TipoCampo) -> bool {
     }
 }
 
+/// Opciones de una importación (los parámetros del comando).
+#[derive(Debug, Clone)]
+struct OpcionesImport {
+    /// Campo del álbum que hace de llave.
+    campo_llave: String,
+    /// Columna del archivo con la llave; `None`/vacía → la homónima del campo.
+    columna_llave: Option<String>,
+    /// `"sustituir"` | `"mantener"` | `"rellenar_vacios"`.
+    politica: String,
+    /// Dar de alta las filas cuya llave no casa (si no, se omiten).
+    crear_faltantes: bool,
+    /// Crear campos para las columnas extra e importar sus valores.
+    importar_extras: bool,
+    /// Solo analizar y contar, sin escribir.
+    dry_run: bool,
+}
+
+impl OpcionesImport {
+    /// Columna del archivo que contiene la llave.
+    fn columna_llave(&self) -> &str {
+        self.columna_llave
+            .as_deref()
+            .filter(|c| !c.trim().is_empty())
+            .unwrap_or(&self.campo_llave)
+    }
+}
+
+/// Campo provisional para una columna extra en el dry-run: permite clasificar
+/// sus valores como si el campo ya existiera, sin tocar la estructura. Nunca
+/// llega a la DB (en dry-run no se llama a `editar`/`crear`).
+fn campo_provisional(extra: &ColumnaExtra, id: i64) -> CampoDef {
+    CampoDef {
+        id,
+        nombre: extra.columna.clone(),
+        col_fisica: String::new(),
+        tabla: Tabla::Principal,
+        tipo: extra.tipo,
+        decimales: extra.decimales,
+        totalizable: false,
+        formula: None,
+        visible: true,
+        modificable: true,
+        orden_visible: 0,
+        formato: None,
+    }
+}
+
 /// Núcleo PURO de la importación (sin Tauri): clasifica/aplica cada fila contra
 /// el álbum según la política. Con `dry_run=true` no llama a `editar`/`crear`.
+///
+/// Las columnas extra deben existir ya como campos al aplicar (las crea
+/// [`importar_en_album`]); en dry-run con `importar_extras` se simulan con
+/// [`campo_provisional`] para que el resumen cuente sus valores.
 ///
 /// `progreso` es un callback opcional `(hechas, total)` para emitir eventos; en
 /// los tests se pasa `None`. La atomicidad es por registro (igual que `ligados`
 /// y `editar_lote`): deuda técnica anotada (variantes `*_en_tx` para una sola
 /// transacción) en el diseño.
-#[allow(clippy::too_many_arguments)]
 fn aplicar_importacion(
     conn: &mut mic_db::pool::Conn,
     campos: &[CampoDef],
     motor: Option<&MotorCalculo>,
     dir_imagenes: Option<&std::path::Path>,
-    campo_llave: &str,
-    politica: &str,
-    crear_faltantes: bool,
-    encabezados: &[String],
-    filas: &[Vec<String>],
-    separador: u8,
-    dry_run: bool,
+    opciones: &OpcionesImport,
+    archivo: &ArchivoLeido,
     mut progreso: Option<&mut dyn FnMut(u64, u64)>,
 ) -> Result<ResultadoImportacion, MicError> {
-    let politica = Politica::desde(politica)?;
-    let prep = preparar_importacion(encabezados, filas, campos, campo_llave, separador)?;
-
-    let campo_llave_def = campos
-        .iter()
-        .find(|c| c.tabla == Tabla::Principal && c.nombre.eq_ignore_ascii_case(campo_llave.trim()))
-        .expect("la llave ya fue validada en preparar_importacion");
+    let politica = Politica::desde(&opciones.politica)?;
+    let campo_llave_def = resolver_campo_llave(campos, &opciones.campo_llave)?;
     let nombre_llave = campo_llave_def.nombre.clone();
     let llave_numerica = matches!(
         campo_llave_def.tipo,
         TipoCampo::Numerico | TipoCampo::Moneda
     );
+    let indice_llave = indice_columna_llave(&archivo.encabezados, opciones.columna_llave())?;
+    let columnas_extra = detectar_extras(
+        &archivo.encabezados,
+        &archivo.filas,
+        campos,
+        Some(indice_llave),
+        archivo.separador,
+    );
+
+    let mut campos_prep = campos.to_vec();
+    let mut campos_creados: Vec<String> = Vec::new();
+    if opciones.importar_extras && opciones.dry_run {
+        for (i, extra) in columnas_extra.iter().enumerate() {
+            campos_prep.push(campo_provisional(extra, -(i as i64) - 1));
+            campos_creados.push(extra.columna.clone());
+        }
+    }
+    let prep = preparar_importacion(
+        &archivo.encabezados,
+        &archivo.filas,
+        &campos_prep,
+        &opciones.campo_llave,
+        opciones.columna_llave(),
+        archivo.separador,
+    )?;
 
     let mut resultado = ResultadoImportacion {
         errores: prep.errores,
         avisos: prep.avisos,
-        dry_run,
+        llaves_vacias: prep.llaves_vacias,
+        llaves_duplicadas: prep.llaves_duplicadas,
+        columnas_extra,
+        campos_creados,
+        dry_run: opciones.dry_run,
         ..Default::default()
     };
 
@@ -951,6 +1186,7 @@ fn aplicar_importacion(
     for fila in &prep.filas {
         match indice_album.get(&fila.clave) {
             Some(&id) => {
+                resultado.coincidentes += 1;
                 aplicar_existente(
                     conn,
                     campos,
@@ -960,15 +1196,16 @@ fn aplicar_importacion(
                     &prep.campos_escritura,
                     &prep.campos_multidato,
                     politica,
-                    dry_run,
+                    opciones.dry_run,
                     &mut resultado,
                 )?;
             }
             None => {
-                if crear_faltantes {
-                    if dry_run {
-                        resultado.creados += 1;
-                    } else {
+                resultado.no_coincidentes.agregar(fila.fila, &fila.clave);
+                if !opciones.crear_faltantes {
+                    resultado.omitidos += 1;
+                } else {
+                    if !opciones.dry_run {
                         crear_registro(
                             conn,
                             campos,
@@ -980,32 +1217,17 @@ fn aplicar_importacion(
                             &prep.campos_escritura,
                             &prep.campos_multidato,
                         )?;
-                        resultado.creados += 1;
                     }
-                } else {
-                    resultado.sin_cambio += 1;
+                    resultado.creados += 1;
                 }
             }
         }
 
         hechas += 1;
-        if hechas % PASO_PROGRESO == 0 {
+        if hechas.is_multiple_of(PASO_PROGRESO) {
             if let Some(cb) = progreso.as_deref_mut() {
                 cb(hechas, total);
             }
-        }
-    }
-
-    if !crear_faltantes {
-        let faltantes = prep
-            .filas
-            .iter()
-            .filter(|f| !indice_album.contains_key(&f.clave))
-            .count();
-        if faltantes > 0 {
-            resultado.avisos.push(format!(
-                "{faltantes} llave(s) no encontrada(s) en el álbum (no se crearon)"
-            ));
         }
     }
 
@@ -1230,16 +1452,13 @@ fn crear_registro(
 // Orquestación del comando (lectura + huella + progreso)
 // ---------------------------------------------------------------------------
 
-/// Orquesta la importación: lee el archivo, verifica la huella opcional, y llama
-/// al núcleo puro emitiendo eventos de progreso.
+/// Orquesta la importación: verifica la huella opcional, lee el archivo e
+/// importa emitiendo eventos de progreso.
 fn importar(
     app: &AppHandle,
     h: &AlbumHandle,
     ruta: &str,
-    campo_llave: &str,
-    politica: &str,
-    crear_faltantes: bool,
-    dry_run: bool,
+    opciones: &OpcionesImport,
     huella: Option<&str>,
 ) -> Result<ResultadoImportacion, MicError> {
     // La huella de la inspección detecta si el archivo cambió entre el resumen
@@ -1253,33 +1472,88 @@ fn importar(
         }
     }
     let archivo = leer_archivo(ruta)?;
-    let separador = archivo.separador;
+
+    let fase = if opciones.dry_run { "analizando" } else { "aplicando" };
+    let mut cb = |hechas: u64, total: u64| {
+        emitir_progreso(app, fase, hechas, total);
+    };
+    importar_en_album(h, &archivo, opciones, Some(&mut cb))
+}
+
+/// Importa en un álbum abierto. Con `importar_extras` (y sin dry-run) primero
+/// crea los campos de las columnas extra y REFRESCA campos + motor del handle
+/// (como `campo_crear`); solo después aplica, para que esas columnas casen por
+/// nombre y los calculados se evalúen con la estructura vigente.
+fn importar_en_album(
+    h: &AlbumHandle,
+    archivo: &ArchivoLeido,
+    opciones: &OpcionesImport,
+    progreso: Option<&mut dyn FnMut(u64, u64)>,
+) -> Result<ResultadoImportacion, MicError> {
+    let crear_extras = opciones.importar_extras && !opciones.dry_run;
+    let mut columnas_extra: Vec<ColumnaExtra> = Vec::new();
+    let mut campos_creados: Vec<String> = Vec::new();
+
+    if crear_extras {
+        let campos = h.campos();
+        // Valida antes de tocar la estructura: con una llave o política
+        // inválidas no debe quedar ningún campo creado.
+        Politica::desde(&opciones.politica)?;
+        resolver_campo_llave(&campos, &opciones.campo_llave)?;
+        let indice_llave = indice_columna_llave(&archivo.encabezados, opciones.columna_llave())?;
+        columnas_extra = detectar_extras(
+            &archivo.encabezados,
+            &archivo.filas,
+            &campos,
+            Some(indice_llave),
+            archivo.separador,
+        );
+        if !columnas_extra.is_empty() {
+            let creacion = (|| -> Result<(), MicError> {
+                let conn = h.db.conn()?;
+                for (i, extra) in columnas_extra.iter().enumerate() {
+                    let def = CampoNuevo {
+                        nombre: extra.columna.clone(),
+                        tabla: Tabla::Principal,
+                        tipo: extra.tipo,
+                        decimales: extra.decimales,
+                        totalizable: false,
+                        formula: None,
+                        visible: true,
+                        modificable: true,
+                        orden_visible: (campos.len() + i) as i32,
+                        formato: None,
+                    };
+                    mic_db::repo_campos::crear(&conn, &def)?;
+                    campos_creados.push(extra.columna.clone());
+                }
+                Ok(())
+            })();
+            // Refresca aunque la creación falle a medias: la caché debe reflejar
+            // los campos que sí quedaron en la DB.
+            h.refrescar_campos()?;
+            creacion?;
+        }
+    }
 
     let campos = h.campos();
     let mut conn = h.db.conn()?;
     let motor = h.motor.read().unwrap_or_else(|e| e.into_inner());
     let dir_imagenes = h.dir_imagenes();
-
-    let fase = if dry_run { "analizando" } else { "aplicando" }.to_string();
-    let fase_cb = fase.clone();
-    let mut cb = |hechas: u64, total: u64| {
-        emitir_progreso(app, &fase_cb, hechas, total);
-    };
-
-    aplicar_importacion(
+    let mut resultado = aplicar_importacion(
         &mut conn,
         &campos,
         motor.as_ref(),
         Some(dir_imagenes.as_path()),
-        campo_llave,
-        politica,
-        crear_faltantes,
-        &archivo.encabezados,
-        &archivo.filas,
-        separador,
-        dry_run,
-        Some(&mut cb),
-    )
+        opciones,
+        archivo,
+        progreso,
+    )?;
+    if crear_extras {
+        resultado.columnas_extra = columnas_extra;
+        resultado.campos_creados = campos_creados;
+    }
+    Ok(resultado)
 }
 
 /// Emite el evento de progreso, registrando (sin propagar) cualquier fallo.
@@ -1624,6 +1898,7 @@ mod tests {
             busqueda: None,
             orden: vec![],
             incluir_ocultos: true,
+            excluidos: Vec::new(),
             offset: 0,
             limit: u32::MAX,
         };
@@ -1646,6 +1921,39 @@ mod tests {
         multidatos: HashMap<String, Vec<String>>,
     }
 
+    fn opciones(llave: &str, politica: &str, crear: bool, dry_run: bool) -> OpcionesImport {
+        OpcionesImport {
+            campo_llave: llave.to_string(),
+            columna_llave: None,
+            politica: politica.to_string(),
+            crear_faltantes: crear,
+            importar_extras: false,
+            dry_run,
+        }
+    }
+
+    fn archivo_prueba(enc: &[String], filas: &[Vec<String>]) -> ArchivoLeido {
+        ArchivoLeido {
+            encabezados: enc.to_vec(),
+            filas: filas.to_vec(),
+            encoding: "utf-8".into(),
+            formato: FormatoArchivo::Csv,
+            separador: b',',
+        }
+    }
+
+    fn aplicar_prueba(
+        conn: &mut mic_db::pool::Conn,
+        campos: &[CampoDef],
+        motor: Option<&MotorCalculo>,
+        opciones: OpcionesImport,
+        enc: &[String],
+        filas: &[Vec<String>],
+    ) -> ResultadoImportacion {
+        aplicar_importacion(conn, campos, motor, None, &opciones, &archivo_prueba(enc, filas), None)
+            .unwrap()
+    }
+
     fn encabezados(cols: &[&str]) -> Vec<String> {
         cols.iter().map(|s| s.to_string()).collect()
     }
@@ -1662,11 +1970,14 @@ mod tests {
         let filas = vec![fila(&["A-1", "20", "4", "nuevo"])];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", false, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         assert_eq!(r.actualizados, 1);
@@ -1687,11 +1998,14 @@ mod tests {
         let filas = vec![fila(&["A-1", "999", "cambiado"])];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "mantener", false, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "mantener", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         assert_eq!(r.sin_cambio, 1);
@@ -1712,11 +2026,14 @@ mod tests {
         let filas = vec![fila(&["A-1", "99", "relleno"])];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "rellenar_vacios", false, &enc,
-            &filas, b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "rellenar_vacios", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         assert_eq!(r.actualizados, 1);
@@ -1736,11 +2053,14 @@ mod tests {
         let filas = vec![fila(&["B-2", "5", "3"])];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", true, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", true, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         assert_eq!(r.creados, 1);
@@ -1751,7 +2071,7 @@ mod tests {
     }
 
     #[test]
-    fn sin_crear_faltantes_cuenta_sin_cambio() {
+    fn sin_crear_faltantes_omite_y_reporta() {
         let (db, _d, campos, motor) = album_pruebas();
         sembrar(&db, &campos, &motor, "A-1", 10.0, 2.0, "");
 
@@ -1759,15 +2079,24 @@ mod tests {
         let filas = vec![fila(&["NUEVA", "5"])];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", false, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         assert_eq!(r.creados, 0);
-        assert_eq!(r.sin_cambio, 1);
+        assert_eq!(r.omitidos, 1);
+        assert_eq!(r.sin_cambio, 0);
+        assert_eq!(r.no_coincidentes.total, 1);
+        assert_eq!(
+            r.no_coincidentes.filas,
+            vec![FilaLlave { fila: 2, llave: "NUEVA".into() }]
+        );
         assert!(obtener_por_clave(&db, &campos, "NUEVA").is_none());
     }
 
@@ -1784,11 +2113,14 @@ mod tests {
 
         // Dry-run.
         let mut conn = db.conn().unwrap();
-        let dry = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", true, &enc, &filas,
-            b',', true, None,
-        )
-        .unwrap();
+        let dry = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", true, true),
+            &enc,
+            &filas,
+        );
         drop(conn);
         assert!(dry.dry_run);
         assert_eq!(dry.actualizados, 1);
@@ -1800,11 +2132,14 @@ mod tests {
 
         // Apply: conteos idénticos.
         let mut conn = db.conn().unwrap();
-        let apply = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", true, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let apply = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", true, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
         assert_eq!(apply.actualizados, dry.actualizados);
         assert_eq!(apply.creados, dry.creados);
@@ -1826,11 +2161,14 @@ mod tests {
         ];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", false, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         assert_eq!(r.errores.len(), 1, "debe haber 1 error de celda");
@@ -1854,11 +2192,14 @@ mod tests {
         let filas = vec![fila(&["A-1", "20"])];
 
         let mut conn = db.conn().unwrap();
-        aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", false, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         let reg = obtener_por_clave(&db, &campos, "A-1").unwrap();
@@ -1900,11 +2241,14 @@ mod tests {
         let filas = vec![fila(&["1", "nuevo"])];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, None, None, "Codigo", "sustituir", true, &enc, &filas, b',',
-            false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            None,
+            opciones("Codigo", "sustituir", true, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         // Debe ACTUALIZAR (no crear un duplicado).
@@ -1926,14 +2270,21 @@ mod tests {
         ];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", false, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
-        assert!(r.avisos.iter().any(|a| a.contains("duplicada")));
+        assert_eq!(r.llaves_duplicadas.total, 1);
+        assert_eq!(
+            r.llaves_duplicadas.filas,
+            vec![FilaLlave { fila: 3, llave: "A-1".into() }]
+        );
         let reg = obtener_por_clave(&db, &campos, "A-1").unwrap();
         assert_eq!(reg.valores.get("Notas").unwrap().como_texto(), "primera");
     }
@@ -1947,11 +2298,14 @@ mod tests {
         let filas = vec![fila(&["A-1", "rojo | verde|azul"])];
 
         let mut conn = db.conn().unwrap();
-        let r = aplicar_importacion(
-            &mut conn, &campos, Some(&motor), None, "Clave", "sustituir", false, &enc, &filas,
-            b',', false, None,
-        )
-        .unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, false),
+            &enc,
+            &filas,
+        );
         drop(conn);
 
         assert_eq!(r.actualizados, 1);
@@ -1960,5 +2314,278 @@ mod tests {
             reg.multidatos.get("Tags").unwrap(),
             &vec!["rojo".to_string(), "verde".to_string(), "azul".to_string()]
         );
+    }
+
+    // --- llave: no coincidentes / vacías / repetidas -----------------------
+
+    #[test]
+    fn reporta_llaves_no_coincidentes_vacias_y_repetidas() {
+        let (db, _d, campos, motor) = album_pruebas();
+        sembrar(&db, &campos, &motor, "A-1", 1.0, 1.0, "");
+        sembrar(&db, &campos, &motor, "A-2", 1.0, 1.0, "");
+
+        let enc = encabezados(&["Clave", "Notas"]);
+        let filas = vec![
+            fila(&["A-1", "x"]),  // fila 2: coincide
+            fila(&["X-9", "x"]),  // fila 3: no coincide
+            fila(&["  ", "x"]),   // fila 4: llave vacía
+            fila(&["A-2", "x"]),  // fila 5: coincide
+            fila(&["X-9", "y"]),  // fila 6: repetida en el archivo
+            fila(&[" Z-3 ", "x"]), // fila 7: no coincide (trim)
+        ];
+
+        let mut conn = db.conn().unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, true),
+            &enc,
+            &filas,
+        );
+        drop(conn);
+
+        assert_eq!(r.coincidentes, 2);
+        assert_eq!(r.no_coincidentes.total, 2);
+        assert_eq!(
+            r.no_coincidentes.filas,
+            vec![
+                FilaLlave { fila: 3, llave: "X-9".into() },
+                FilaLlave { fila: 7, llave: "Z-3".into() },
+            ]
+        );
+        assert_eq!(r.llaves_vacias.total, 1);
+        assert_eq!(r.llaves_vacias.filas[0].fila, 4);
+        assert_eq!(
+            r.llaves_duplicadas.filas,
+            vec![FilaLlave { fila: 6, llave: "X-9".into() }]
+        );
+        assert_eq!(r.omitidos, 2);
+        assert_eq!(r.creados, 0);
+        assert_eq!(r.actualizados, 2);
+    }
+
+    #[test]
+    fn no_coincidentes_omitir_o_importar_como_nuevos() {
+        let (db, _d, campos, motor) = album_pruebas();
+        sembrar(&db, &campos, &motor, "A-1", 1.0, 1.0, "");
+
+        let enc = encabezados(&["Clave", "Notas"]);
+        let filas = vec![fila(&["A-1", "actual"]), fila(&["N-1", "nueva"])];
+
+        // Omitir: el registro sin coincidencia no se crea.
+        let mut conn = db.conn().unwrap();
+        let omitir = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", false, false),
+            &enc,
+            &filas,
+        );
+        drop(conn);
+        assert_eq!(omitir.no_coincidentes.total, 1);
+        assert_eq!(omitir.omitidos, 1);
+        assert_eq!(omitir.creados, 0);
+        assert!(obtener_por_clave(&db, &campos, "N-1").is_none());
+
+        // Importar como nuevos: se da de alta con sus valores.
+        let mut conn = db.conn().unwrap();
+        let crear = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            opciones("Clave", "sustituir", true, false),
+            &enc,
+            &filas,
+        );
+        drop(conn);
+        assert_eq!(crear.no_coincidentes.total, 1);
+        assert_eq!(crear.omitidos, 0);
+        assert_eq!(crear.creados, 1);
+        let n1 = obtener_por_clave(&db, &campos, "N-1").unwrap();
+        assert_eq!(n1.valores.get("Notas").unwrap().como_texto(), "nueva");
+        assert_eq!(repo_registros::total(&db.conn().unwrap()).unwrap(), 2);
+    }
+
+    #[test]
+    fn llave_desde_columna_con_otro_nombre() {
+        let (db, _d, campos, motor) = album_pruebas();
+        sembrar(&db, &campos, &motor, "A-1", 1.0, 1.0, "");
+
+        // El archivo trae la llave en "SKU" (no existe como campo).
+        let enc = encabezados(&["SKU", "Notas"]);
+        let filas = vec![fila(&["A-1", "por sku"])];
+        let mut op = opciones("Clave", "sustituir", false, false);
+        op.columna_llave = Some("sku".into());
+
+        let mut conn = db.conn().unwrap();
+        let r = aplicar_prueba(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            op,
+            &enc,
+            &filas,
+        );
+        drop(conn);
+
+        assert_eq!(r.coincidentes, 1);
+        assert_eq!(r.actualizados, 1);
+        // La columna llave no cuenta como extra ni como ignorada.
+        assert!(r.columnas_extra.is_empty());
+        assert!(!r.avisos.iter().any(|a| a.contains("SKU")));
+        let reg = obtener_por_clave(&db, &campos, "A-1").unwrap();
+        assert_eq!(reg.valores.get("Notas").unwrap().como_texto(), "por sku");
+    }
+
+    #[test]
+    fn columna_llave_ausente_es_error() {
+        let (db, _d, campos, motor) = album_pruebas();
+        let enc = encabezados(&["Notas"]);
+        let filas = vec![fila(&["x"])];
+        let mut conn = db.conn().unwrap();
+        let err = aplicar_importacion(
+            &mut conn,
+            &campos,
+            Some(&motor),
+            None,
+            &opciones("Clave", "sustituir", false, true),
+            &archivo_prueba(&enc, &filas),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no está presente"));
+    }
+
+    // --- columnas extra ----------------------------------------------------
+
+    #[test]
+    fn inferir_tipo_de_columnas_extra() {
+        let tipo = |vals: &[&str]| inferir_tipo(vals.iter().copied(), b',');
+        assert_eq!(tipo(&["1", "20", "", "300"]), (TipoCampo::Numerico, 0));
+        assert_eq!(tipo(&["1.5", "2"]), (TipoCampo::Numerico, 2));
+        assert_eq!(tipo(&["$1,234.50", "10"]), (TipoCampo::Numerico, 2));
+        assert_eq!(tipo(&["2026-06-05", "05/07/2026"]), (TipoCampo::Fecha, 0));
+        assert_eq!(tipo(&["12", "rojo"]), (TipoCampo::Texto, 0));
+        // Cero a la izquierda: es un código, no un número.
+        assert_eq!(tipo(&["007", "12"]), (TipoCampo::Texto, 0));
+        assert_eq!(tipo(&["", "  "]), (TipoCampo::Texto, 0));
+        assert_eq!(tipo(&["0", "0.25"]), (TipoCampo::Numerico, 2));
+    }
+
+    #[test]
+    fn detecta_extras_sin_llave_ni_repetidas_ni_homonimas() {
+        let campos = vec![
+            campo_def("Clave", TipoCampo::Texto),
+            CampoDef {
+                tabla: Tabla::Variantes,
+                ..campo_def("Talla", TipoCampo::Texto)
+            },
+        ];
+        let enc = encabezados(&["SKU", "Clave", "Color", "color", "", "Talla", "Peso"]);
+        let filas = vec![fila(&["A", "A", "rojo", "x", "x", "M", "1.5"])];
+        let extras = detectar_extras(&enc, &filas, &campos, Some(0), b',');
+        let nombres: Vec<&str> = extras.iter().map(|e| e.columna.as_str()).collect();
+        // SKU es la llave; "color" repetida; "" sin nombre; Talla existe en variantes.
+        assert_eq!(nombres, vec!["Color", "Peso"]);
+        assert_eq!(extras[1].tipo, TipoCampo::Numerico);
+    }
+
+    /// Handle real sobre el álbum de pruebas (para probar el refresco de campos).
+    fn handle_pruebas() -> (AlbumHandle, tempfile::TempDir) {
+        let (db, dir, campos, motor) = album_pruebas();
+        sembrar(&db, &campos, &motor, "A-1", 10.0, 2.0, "");
+        (AlbumHandle::nuevo(db).unwrap(), dir)
+    }
+
+    fn archivo_con_extras() -> ArchivoLeido {
+        archivo_prueba(
+            &encabezados(&["Clave", "Precio", "Cantidad", "Color", "Peso", "Llegada"]),
+            &[
+                fila(&["A-1", "10", "2", "rojo", "1.5", "2026-06-05"]),
+                fila(&["B-2", "5", "3", "azul", "2", "07/06/2026"]),
+            ],
+        )
+    }
+
+    #[test]
+    fn extras_sin_marcar_se_reportan_y_se_ignoran() {
+        let (h, _d) = handle_pruebas();
+        let antes = h.campos().len();
+        let r = importar_en_album(
+            &h,
+            &archivo_con_extras(),
+            &opciones("Clave", "sustituir", true, false),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(h.campos().len(), antes, "no se crean campos");
+        assert!(r.campos_creados.is_empty());
+        let extras: Vec<&str> = r.columnas_extra.iter().map(|e| e.columna.as_str()).collect();
+        assert_eq!(extras, vec!["Color", "Peso", "Llegada"]);
+        assert!(r.avisos.iter().any(|a| a.contains("columnas ignoradas")));
+    }
+
+    #[test]
+    fn extras_en_dry_run_no_crean_campos_pero_cuentan() {
+        let (h, _d) = handle_pruebas();
+        let antes = h.campos().len();
+        let mut op = opciones("Clave", "sustituir", false, true);
+        op.importar_extras = true;
+        let r = importar_en_album(&h, &archivo_con_extras(), &op, None).unwrap();
+
+        assert_eq!(h.campos().len(), antes, "el dry-run no toca la estructura");
+        assert_eq!(r.campos_creados, vec!["Color", "Peso", "Llegada"]);
+        // A-1 solo cambia por las columnas extra (Precio/Cantidad iguales).
+        assert_eq!(r.actualizados, 1);
+        assert!(!r.avisos.iter().any(|a| a.contains("columnas ignoradas")));
+    }
+
+    #[test]
+    fn extras_crean_campos_refrescan_handle_e_importan() {
+        let (h, _d) = handle_pruebas();
+        let mut op = opciones("Clave", "sustituir", true, false);
+        op.importar_extras = true;
+        let r = importar_en_album(&h, &archivo_con_extras(), &op, None).unwrap();
+
+        assert_eq!(r.campos_creados, vec!["Color", "Peso", "Llegada"]);
+        assert_eq!(r.actualizados, 1);
+        assert_eq!(r.creados, 1);
+
+        // La caché del handle ya ve los campos nuevos con el tipo inferido.
+        let campos = h.campos();
+        let tipo = |n: &str| campos.iter().find(|c| c.nombre == n).map(|c| c.tipo);
+        assert_eq!(tipo("Color"), Some(TipoCampo::Texto));
+        assert_eq!(tipo("Peso"), Some(TipoCampo::Numerico));
+        assert_eq!(tipo("Llegada"), Some(TipoCampo::Fecha));
+        assert!(h.motor.read().unwrap().is_some(), "motor recompilado");
+
+        // Los valores se importaron: el refresco ocurrió ANTES de aplicar.
+        let a1 = obtener_por_clave(&h.db, &campos, "A-1").unwrap();
+        assert_eq!(a1.valores.get("Color").unwrap().como_texto(), "rojo");
+        assert_eq!(a1.valores.get("Peso").unwrap().como_f64().unwrap(), 1.5);
+        assert_eq!(a1.valores.get("Llegada").unwrap().como_texto(), "2026-06-05");
+        let b2 = obtener_por_clave(&h.db, &campos, "B-2").unwrap();
+        assert_eq!(b2.valores.get("Llegada").unwrap().como_texto(), "2026-06-07");
+        // El motor vigente calcula el registro nuevo: Total = 5 * 3.
+        assert_eq!(b2.valores.get("Total").unwrap().como_f64().unwrap(), 15.0);
+
+        // Reimportar ya no detecta extras ni crea nada.
+        let r2 = importar_en_album(&h, &archivo_con_extras(), &op, None).unwrap();
+        assert!(r2.campos_creados.is_empty());
+        assert_eq!(h.campos().len(), campos.len());
+    }
+
+    #[test]
+    fn extras_con_llave_invalida_no_crean_campos() {
+        let (h, _d) = handle_pruebas();
+        let antes = h.campos().len();
+        let mut op = opciones("Clave", "sustituir", false, false);
+        op.importar_extras = true;
+        op.columna_llave = Some("NoExiste".into());
+        assert!(importar_en_album(&h, &archivo_con_extras(), &op, None).is_err());
+        assert_eq!(h.campos().len(), antes);
     }
 }

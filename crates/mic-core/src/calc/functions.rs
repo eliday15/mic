@@ -17,6 +17,10 @@
 //! - Para mostrar un resultado *como fecha* (cuando el tipo de salida del campo
 //!   calculado es Fecha), `DiasAFecha(n)` reconvierte: `1900-01-01 + n días`.
 //!
+//! Extensión de MIC 3.0: `@HOY` (sin argumentos, paréntesis opcionales)
+//! devuelve la fecha de hoy en días, para fórmulas como `@HOY - Alta`
+//! ("días transcurridos") o `Vencimiento - @HOY` ("días para vencer").
+//!
 //! Este módulo expone esas conversiones con `chrono` y está pensado para
 //! ampliarse con futuras funciones (registro en [`buscar_funcion`]).
 
@@ -77,6 +81,8 @@ pub enum Funcion {
     /// `@FECHA(arg)`: interpreta `arg` como fecha y la reduce a su número de
     /// días desde el epoch para permitir aritmética de fechas.
     Fecha,
+    /// `@HOY` / `@HOY()`: la fecha de hoy en días desde el epoch.
+    Hoy,
 }
 
 impl Funcion {
@@ -84,16 +90,18 @@ impl Funcion {
     pub fn aridad(&self) -> usize {
         match self {
             Funcion::Fecha => 1,
+            Funcion::Hoy => 0,
         }
     }
 }
 
 /// Resuelve el nombre de una función (tras `@`) a su variante.
-/// El original solo conoce `FECHA` (comparado en mayúsculas).
-/// Diseñado para ampliarse: añade aquí nuevas funciones futuras.
+/// El original solo conoce `FECHA` (comparado en mayúsculas); `HOY` es
+/// extensión de MIC 3.0.
 pub fn buscar_funcion(nombre: &str) -> Option<Funcion> {
     match nombre.to_ascii_uppercase().as_str() {
         "FECHA" => Some(Funcion::Fecha),
+        "HOY" => Some(Funcion::Hoy),
         _ => None,
     }
 }
@@ -140,5 +148,11 @@ mod tests {
         assert_eq!(buscar_funcion("FECHA"), Some(Funcion::Fecha));
         assert_eq!(buscar_funcion("fecha"), Some(Funcion::Fecha));
         assert_eq!(buscar_funcion("SUMA"), None);
+    }
+
+    #[test]
+    fn hoy_es_funcion_sin_argumentos() {
+        assert_eq!(buscar_funcion("hoy"), Some(Funcion::Hoy));
+        assert_eq!(Funcion::Hoy.aridad(), 0);
     }
 }

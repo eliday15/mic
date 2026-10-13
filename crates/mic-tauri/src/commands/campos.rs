@@ -6,11 +6,12 @@
 //! consultas posteriores reflejen la nueva forma del álbum.
 
 use mic_core::calc::MotorCalculo;
-use mic_core::model::{CampoDef, CampoNuevo, Valor, Valores};
+use mic_core::error::MicError;
+use mic_core::model::{CampoDef, CampoNuevo, TipoCampo, Valor, Valores};
 use tauri::State;
 
 use crate::commands::{a_string, en_db, handle};
-use crate::state::AppState;
+use crate::state::{AlbumHandle, AppState};
 
 /// Lista los campos del álbum (orden visible).
 #[tauri::command]
@@ -40,6 +41,7 @@ pub async fn campo_crear(
             mic_db::repo_campos::crear(&conn, &def)?
         };
         h.refrescar_campos()?;
+        recalcular_si_calculado(h, &def)?;
         Ok(creado)
     })
     .await
@@ -61,9 +63,23 @@ pub async fn campo_editar(
             mic_db::repo_campos::editar(&conn, campo_id, &def)?
         };
         h.refrescar_campos()?;
+        recalcular_si_calculado(h, &def)?;
         Ok(editado)
     })
     .await
+}
+
+/// Tras crear/editar un calculado (fórmula o tipo de resultado nuevos),
+/// recalcula el álbum para que los valores guardados reflejen la definición.
+fn recalcular_si_calculado(h: &AlbumHandle, def: &CampoNuevo) -> Result<(), MicError> {
+    if def.tipo != TipoCampo::Calculado {
+        return Ok(());
+    }
+    let campos = h.campos();
+    let motor = h.motor.read().unwrap_or_else(|e| e.into_inner());
+    let mut conn = h.db.conn()?;
+    mic_db::repo_registros::recalcular_todo(&mut conn, &campos, motor.as_ref())?;
+    Ok(())
 }
 
 /// Elimina un campo (DROP COLUMN + limpieza). Refresca campos + motor.
@@ -103,18 +119,20 @@ pub async fn campos_reordenar(
 }
 
 /// Evalúa una fórmula suelta contra valores de prueba (vista previa del editor
-/// de fórmulas). No persiste nada.
+/// de fórmulas). No persiste nada. `formato` es el del campo en edición:
+/// `"fecha"` devuelve el resultado como fecha ISO.
 #[tauri::command]
 pub async fn formula_probar(
     state: State<'_, AppState>,
     album_id: u64,
     formula: String,
     valores: Valores,
+    formato: Option<String>,
 ) -> Result<Valor, String> {
     let h = handle(&state, album_id)?;
     let campos = h.campos();
     tokio::task::spawn_blocking(move || {
-        MotorCalculo::evaluar_formula_libre(&campos, &formula, &valores)
+        MotorCalculo::evaluar_formula_libre(&campos, &formula, &valores, formato.as_deref())
     })
     .await
     .map_err(|e| format!("error interno al evaluar fórmula: {e}"))?

@@ -15,6 +15,7 @@ import type {
   CampoNuevo,
   CategoriaVal,
   CondicionFiltro,
+  FormatoCampo,
   Grupo,
   ImagenSet,
   MdbInspeccion,
@@ -164,13 +165,15 @@ export function camposReordenar(
   return invoke("campos_reordenar", { albumId, orden });
 }
 
-/** Evalúa una fórmula con un juego de valores (vista previa del editor). */
+/** Evalúa una fórmula con un juego de valores (vista previa del editor).
+ *  `formato: "fecha"` devuelve el resultado como fecha ISO. */
 export function formulaProbar(
   albumId: number,
   formula: string,
   valores: Valores,
+  formato: FormatoCampo | null = null,
 ): Promise<Valor> {
-  return invoke("formula_probar", { albumId, formula, valores });
+  return invoke("formula_probar", { albumId, formula, valores, formato });
 }
 
 // ---------------------------------------------------------------------------

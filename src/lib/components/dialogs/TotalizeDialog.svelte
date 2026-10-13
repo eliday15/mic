@@ -10,7 +10,7 @@
   import { ArrowDownUp, ArrowDown, ArrowUp } from "lucide-svelte";
   import { Modal, Button, Spinner, EmptyState, IconButton } from "$lib/components/ui";
   import { registrosEstadisticas } from "$lib/ipc/commands";
-  import { formatearEntero, formatearPorTipo } from "$lib/utils/format";
+  import { formatearEntero, formatearPorTipo, esCampoFecha } from "$lib/utils/format";
   import { ui } from "$lib/stores/ui.svelte";
   import { t } from "$lib/i18n/es";
   import type { AlbumState } from "$lib/stores/albumState.svelte";
@@ -30,7 +30,8 @@
       .filter(
         (c) =>
           c.tabla === estado.tabla &&
-          (c.tipo === "numerico" || c.tipo === "moneda" || c.tipo === "calculado"),
+          (c.tipo === "numerico" || c.tipo === "moneda" || c.tipo === "calculado") &&
+          !esCampoFecha(c),
       )
       .sort((a, b) => a.ordenVisible - b.ordenVisible),
   );
@@ -40,7 +41,8 @@
     const nums = estado.campos.filter(
       (c) =>
         c.tabla === estado.tabla &&
-        (c.tipo === "numerico" || c.tipo === "moneda" || c.tipo === "calculado"),
+        (c.tipo === "numerico" || c.tipo === "moneda" || c.tipo === "calculado") &&
+          !esCampoFecha(c),
     );
     const tot = nums.filter((c) => c.totalizable).map((c) => c.nombre);
     return tot.length > 0 ? tot : nums.map((c) => c.nombre);
