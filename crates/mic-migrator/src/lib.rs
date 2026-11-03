@@ -6,6 +6,7 @@
 
 pub mod csv_parser;
 pub mod diag;
+pub mod imagenes;
 pub mod jet;
 pub mod migrar;
 pub mod paths;

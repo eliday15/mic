@@ -10,7 +10,8 @@
 //! 4. `Variantes` (si existe), enlazando `_idprincipal_`.
 //! 5. `Multidatos` (resuelve `Campo_n` → `campo_id`).
 //! 6. `Categorias`, `Grupos`, `FiltrosAv` (avisos si algún operador no mapea).
-//! 7. Copia la carpeta `imagenes/` junto al `.mdb` si existe.
+//! 7. Copia cada imagen referenciada, buscándola junto al `.mdb`, en la carpeta
+//!    `imagenes` hermana de la de álbumes y en su ruta original ([`crate::imagenes`]).
 //! 8. Reindexa FTS y recalcula los campos calculados (las discrepancias se
 //!    reportan como advertencias, nunca como error).
 //!
@@ -23,6 +24,7 @@ use mic_core::error::MicError;
 use mic_core::model::{CampoDef, CampoNuevo, TipoCampo, Valor, Valores};
 use serde::{Deserialize, Serialize};
 
+use crate::imagenes::{self, RefImagen};
 use mic_db::pool::Conn;
 use mic_db::AlbumDb;
 use mic_db::{fts, repo_campos, repo_filtros, repo_grupos};
@@ -160,11 +162,12 @@ const PLAZO_COPIA: std::time::Duration = std::time::Duration::from_secs(300);
 fn copia_local(origen: &Path) -> Result<CopiaLocal, MicError> {
     static CONSECUTIVO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = CONSECUTIVO.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let destino = std::env::temp_dir().join(format!(
-        "mic-migracion-{}-{n}.mdb",
-        std::process::id()
+    let destino =
+        std::env::temp_dir().join(format!("mic-migracion-{}-{n}.mdb", std::process::id()));
+    crate::diag::paso(&format!(
+        "copiando el .mdb a disco local ({})",
+        origen.display()
     ));
-    crate::diag::paso(&format!("copiando el .mdb a disco local ({})", origen.display()));
 
     let (tx, rx) = std::sync::mpsc::channel();
     let origen_hilo = origen.to_path_buf();
@@ -308,7 +311,12 @@ pub fn migrar(
 
     progreso("Preparando", 0, 0);
     let db = AlbumDb::crear(destino, &nombre_album)?;
-    let dir_imagenes_destino = db.dir_imagenes();
+    let dir_album = db
+        .ruta()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut refs_imagenes: Vec<RefImagen> = Vec::new();
 
     let tablas = jet::tablas(ruta_mdb)?;
 
@@ -320,8 +328,16 @@ pub fn migrar(
     if existe_tabla(&tablas, "Principal") {
         let nom = nombre_tabla(&tablas, "Principal").unwrap().to_string();
         let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
-        reporte.filas_principal =
-            migrar_registros(&db, &ctx, &datos, true, dir_mdb, &progreso, &mut reporte)?;
+        reporte.filas_principal = migrar_registros(
+            &db,
+            &ctx,
+            &datos,
+            true,
+            dir_mdb,
+            &progreso,
+            &mut refs_imagenes,
+            &mut reporte,
+        )?;
     }
 
     // --- 3) Variantes ------------------------------------------------------
@@ -330,7 +346,14 @@ pub fn migrar(
         let datos = leer_para_migrar(ruta_mdb, &nom, &mut reporte)?;
         if !datos.is_empty() {
             reporte.filas_variantes = migrar_registros(
-                &db, &ctx, &datos, false, dir_mdb, &progreso, &mut reporte,
+                &db,
+                &ctx,
+                &datos,
+                false,
+                dir_mdb,
+                &progreso,
+                &mut refs_imagenes,
+                &mut reporte,
             )?;
         }
     }
@@ -365,8 +388,7 @@ pub fn migrar(
 
     // --- 8) Imágenes -------------------------------------------------------
     progreso("Imágenes", 0, 0);
-    copiar_imagenes(dir_mdb, &dir_imagenes_destino, &mut reporte);
-    verificar_imagenes(&db, &dir_imagenes_destino, &mut reporte)?;
+    imagenes::importar(&refs_imagenes, dir_mdb, &dir_album, &progreso, &mut reporte);
 
     // --- 9) FTS + recálculo ------------------------------------------------
     progreso("Indexando", 0, 0);
@@ -376,7 +398,11 @@ pub fn migrar(
     }
     recalcular_calculados(&db, &ctx, &mut reporte)?;
 
-    progreso("Completado", reporte.filas_principal, reporte.filas_principal);
+    progreso(
+        "Completado",
+        reporte.filas_principal,
+        reporte.filas_principal,
+    );
     Ok(reporte)
 }
 
@@ -400,10 +426,9 @@ fn migrar_campos(
                     por_nombre.insert(def.nombre.clone(), def.id);
                     campos.push(def);
                 }
-                Err(e) => reporte.advertencias.push(format!(
-                    "no se pudo crear el campo '{}': {e}",
-                    c.def.nombre
-                )),
+                Err(e) => reporte
+                    .advertencias
+                    .push(format!("no se pudo crear el campo '{}': {e}", c.def.nombre)),
             }
         }
     } else {
@@ -417,6 +442,7 @@ fn migrar_campos(
 
 /// Inserta las filas de Principal/Variantes con INSERTs directos en una sola
 /// transacción (rápido para datos masivos). Devuelve el número de filas.
+#[allow(clippy::too_many_arguments)]
 fn migrar_registros(
     db: &AlbumDb,
     ctx: &Contexto,
@@ -424,6 +450,7 @@ fn migrar_registros(
     principal: bool,
     dir_mdb: &Path,
     progreso: &ProgresoMigracion,
+    refs_imagenes: &mut Vec<RefImagen>,
     reporte: &mut MigracionReporte,
 ) -> Result<u64, MicError> {
     let tabla_sql = if principal { "principal" } else { "variantes" };
@@ -467,7 +494,9 @@ fn migrar_registros(
         let mut vals: Vec<rusqlite::types::Value> = Vec::new();
 
         // _id_ (preservamos el id original si existe).
-        if let Some(idp) = i_id.and_then(|i| fila.get(i)).and_then(|s| s.trim().parse::<i64>().ok())
+        if let Some(idp) = i_id
+            .and_then(|i| fila.get(i))
+            .and_then(|s| s.trim().parse::<i64>().ok())
         {
             cols.push("_id_".into());
             vals.push(rusqlite::types::Value::Integer(idp));
@@ -477,6 +506,10 @@ fn migrar_registros(
         if let Some(raw) = i_imagen.and_then(|i| fila.get(i)) {
             let rel = paths::normalizar_imagen(raw, dir_mdb);
             if !rel.is_empty() {
+                refs_imagenes.push(RefImagen {
+                    original: raw.to_string(),
+                    relativa: rel.clone(),
+                });
                 cols.push("_imagen_".into());
                 vals.push(rusqlite::types::Value::Text(rel));
             }
@@ -561,12 +594,10 @@ fn convertir_valor_sql(crudo: &str, tipo: TipoCampo) -> rusqlite::types::Value {
         return Value::Null;
     }
     match tipo {
-        TipoCampo::Numerico | TipoCampo::Moneda | TipoCampo::Calculado => {
-            match parse_numero(t) {
-                Some(n) => Value::Real(n),
-                None => Value::Null,
-            }
-        }
+        TipoCampo::Numerico | TipoCampo::Moneda | TipoCampo::Calculado => match parse_numero(t) {
+            Some(n) => Value::Real(n),
+            None => Value::Null,
+        },
         TipoCampo::Fecha => match normalizar_fecha_iso(t) {
             Some(iso) => Value::Text(iso),
             None => Value::Null,
@@ -625,9 +656,7 @@ fn migrar_multidatos(
     let mut campos_no_encontrados: Vec<String> = Vec::new();
 
     for fila in &datos.filas {
-        let id = fila
-            .get(i_id)
-            .and_then(|s| s.trim().parse::<i64>().ok());
+        let id = fila.get(i_id).and_then(|s| s.trim().parse::<i64>().ok());
         let id = match id {
             Some(v) => v,
             None => continue,
@@ -836,7 +865,10 @@ fn migrar_filtros(
         let campo = fila.get(i_campo).map(|s| s.trim()).unwrap_or("");
         let op_sql = fila.get(i_opc).map(|s| s.trim()).unwrap_or("");
         let valor = fila.get(i_valor).map(|s| s.trim()).unwrap_or("");
-        let op_rel_txt = i_opr.and_then(|i| fila.get(i)).map(|s| s.trim()).unwrap_or("");
+        let op_rel_txt = i_opr
+            .and_then(|i| fila.get(i))
+            .map(|s| s.trim())
+            .unwrap_or("");
 
         let op_comp = match mapear_op_comp(op_sql) {
             Some(o) => o,
@@ -859,14 +891,15 @@ fn migrar_filtros(
         if !por_nombre.contains_key(nombre) {
             orden_nombres.push(nombre.to_string());
         }
-        por_nombre.entry(nombre.to_string()).or_default().push(
-            CondicionFiltro {
+        por_nombre
+            .entry(nombre.to_string())
+            .or_default()
+            .push(CondicionFiltro {
                 op_rel: op_rel.or(if es_primera { None } else { Some(OpRel::Y) }),
                 campo: campo.to_string(),
                 op_comp,
                 valor: valor.to_string(),
-            },
-        );
+            });
     }
 
     let mut conn = db.conn()?;
@@ -916,73 +949,6 @@ fn mapear_op_rel(op: &str) -> Option<mic_core::model::OpRel> {
     }
 }
 
-/// Copia recursivamente la carpeta `imagenes/` que esté junto al `.mdb`.
-fn copiar_imagenes(dir_mdb: &Path, destino: &Path, reporte: &mut MigracionReporte) {
-    let origen = dir_mdb.join(paths::DIR_IMAGENES);
-    if !origen.is_dir() {
-        return;
-    }
-    if let Err(e) = copiar_dir(&origen, destino) {
-        reporte
-            .advertencias
-            .push(format!("no se pudo copiar la carpeta de imágenes: {e}"));
-    }
-}
-
-/// Copia recursiva sencilla de archivos (sin symlinks).
-fn copiar_dir(origen: &Path, destino: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(destino)?;
-    for entrada in std::fs::read_dir(origen)? {
-        let entrada = entrada?;
-        let ruta = entrada.path();
-        let dst = destino.join(entrada.file_name());
-        if ruta.is_dir() {
-            copiar_dir(&ruta, &dst)?;
-        } else if ruta.is_file() {
-            std::fs::copy(&ruta, &dst)?;
-        }
-    }
-    Ok(())
-}
-
-/// Recorre las imágenes referenciadas y cuenta presentes/faltantes.
-fn verificar_imagenes(
-    db: &AlbumDb,
-    dir_imagenes: &Path,
-    reporte: &mut MigracionReporte,
-) -> Result<(), MicError> {
-    let conn = db.conn()?;
-    let mut faltantes = Vec::new();
-    let mut encontradas = 0u64;
-
-    for tabla in ["principal", "variantes"] {
-        // variantes podría no tener filas; la consulta es válida igualmente.
-        let mut stmt = match conn.prepare(&format!(
-            "SELECT _imagen_ FROM {tabla} WHERE _imagen_ IS NOT NULL AND _imagen_ <> ''"
-        )) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let filas = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(err_sql)?;
-        for r in filas {
-            let rel = r.map_err(err_sql)?;
-            let nombre = paths::nombre_archivo(&rel);
-            let abs = dir_imagenes.join(nombre);
-            if abs.is_file() {
-                encontradas += 1;
-            } else {
-                faltantes.push(rel);
-            }
-        }
-    }
-
-    reporte.imagenes_encontradas = encontradas;
-    reporte.imagenes_faltantes = faltantes;
-    Ok(())
-}
-
 /// Recalcula los campos calculados con el motor nuevo y reporta discrepancias
 /// frente al valor migrado (nunca falla la migración por esto).
 fn recalcular_calculados(
@@ -1014,22 +980,14 @@ fn recalcular_calculados(
         let campos_tabla: Vec<&CampoDef> = ctx
             .campos
             .iter()
-            .filter(|c| {
-                matches!(c.tabla, mic_core::model::Tabla::Principal) == principal
-            })
+            .filter(|c| matches!(c.tabla, mic_core::model::Tabla::Principal) == principal)
             .collect();
         if campos_tabla.is_empty() {
             continue;
         }
 
         let conn = db.conn()?;
-        recalcular_tabla(
-            &conn,
-            tabla_sql,
-            &campos_tabla,
-            &motor,
-            &mut discrepancias,
-        )?;
+        recalcular_tabla(&conn, tabla_sql, &campos_tabla, &motor, &mut discrepancias)?;
     }
 
     if discrepancias > 0 {
@@ -1110,13 +1068,12 @@ fn recalcular_tabla(
 /// Lee un valor de una fila SQLite según el tipo del campo.
 fn leer_valor(row: &rusqlite::Row, idx: usize, tipo: TipoCampo) -> Valor {
     match tipo {
-        TipoCampo::Numerico | TipoCampo::Moneda | TipoCampo::Calculado => {
-            row.get::<_, Option<f64>>(idx)
-                .ok()
-                .flatten()
-                .map(Valor::Numero)
-                .unwrap_or_default()
-        }
+        TipoCampo::Numerico | TipoCampo::Moneda | TipoCampo::Calculado => row
+            .get::<_, Option<f64>>(idx)
+            .ok()
+            .flatten()
+            .map(Valor::Numero)
+            .unwrap_or_default(),
         TipoCampo::Multidato => row
             .get::<_, Option<i64>>(idx)
             .ok()
@@ -1187,7 +1144,10 @@ fn err_sql(e: rusqlite::Error) -> MicError {
 ///   tabla de variantes.
 pub fn parse_xms(ruta: &Path) -> Result<Vec<CampoNuevo>, MicError> {
     let bytes = std::fs::read(ruta).map_err(|e| {
-        MicError::Migracion(format!("no se pudo leer la plantilla '{}': {e}", ruta.display()))
+        MicError::Migracion(format!(
+            "no se pudo leer la plantilla '{}': {e}",
+            ruta.display()
+        ))
     })?;
     // Las plantillas se guardan en iso-8859-1/Windows-1252.
     let texto = crate::csv_parser::decodificar_cp1252(&bytes);
@@ -1226,9 +1186,7 @@ pub fn parse_xms_texto(xml: &str) -> Result<Vec<CampoNuevo>, MicError> {
                     }
                     _ if dentro_registro => {
                         // Nodo de campo de usuario.
-                        if let Some(campo) =
-                            nodo_a_campo(&nombre_nodo, &e, en_variantes, orden)?
-                        {
+                        if let Some(campo) = nodo_a_campo(&nombre_nodo, &e, en_variantes, orden)? {
                             campos.push(campo);
                             orden += 1;
                         }
@@ -1442,8 +1400,14 @@ mod tests {
 
     #[test]
     fn normaliza_fecha_variantes() {
-        assert_eq!(normalizar_fecha_iso("2007-10-29"), Some("2007-10-29".into()));
-        assert_eq!(normalizar_fecha_iso("29/10/2007"), Some("2007-10-29".into()));
+        assert_eq!(
+            normalizar_fecha_iso("2007-10-29"),
+            Some("2007-10-29".into())
+        );
+        assert_eq!(
+            normalizar_fecha_iso("29/10/2007"),
+            Some("2007-10-29".into())
+        );
         assert_eq!(
             normalizar_fecha_iso("2007-10-29 00:00:00"),
             Some("2007-10-29".into())

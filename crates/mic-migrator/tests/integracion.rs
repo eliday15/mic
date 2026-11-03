@@ -75,7 +75,12 @@ fn migra_album_mic_completo() {
     let insp = mic_migrator::inspeccionar(&fixture).expect("inspeccionar el álbum MIC");
     assert_eq!(insp.total_estimado, 60, "60 registros en Principal");
     assert!(insp.tiene_variantes, "el álbum tiene variantes");
-    assert_eq!(insp.campos.len(), 9, "9 campos de usuario: {:?}", insp.campos);
+    assert_eq!(
+        insp.campos.len(),
+        9,
+        "9 campos de usuario: {:?}",
+        insp.campos
+    );
 
     let dir = tempfile::tempdir().expect("tempdir");
     let destino = dir.path().join("album.micdb");
@@ -85,11 +90,7 @@ fn migra_album_mic_completo() {
     assert_eq!(rep.filas_principal, 60);
     assert_eq!(rep.filas_variantes, 24);
     assert_eq!(rep.filas_multidatos, 40);
-    assert!(
-        rep.advertencias.is_empty(),
-        "sin advertencias: {:?}",
-        rep.advertencias
-    );
+    sin_mas_avisos_que_imagenes(&rep);
 }
 
 /// El mismo álbum MIC pero en formato **Jet 3.0** — el que crea el VB6 real
@@ -98,8 +99,8 @@ fn migra_album_mic_completo() {
 /// `scripts/crear-jet3.ps1`); cubre Jet3 + columnas acentuadas + memo + moneda.
 #[test]
 fn migra_album_mic_jet3_completo() {
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/album-mic-jet3.mdb");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/album-mic-jet3.mdb");
 
     let insp = mic_migrator::inspeccionar(&fixture).expect("inspeccionar el álbum Jet3");
     assert_eq!(insp.total_estimado, 60);
@@ -118,7 +119,7 @@ fn migra_album_mic_jet3_completo() {
     assert_eq!(rep.filas_principal, 60);
     assert_eq!(rep.filas_variantes, 24);
     assert_eq!(rep.filas_multidatos, 40);
-    assert!(rep.advertencias.is_empty(), "{:?}", rep.advertencias);
+    sin_mas_avisos_que_imagenes(&rep);
 }
 
 /// Contrato con el frontend (CONTRACT.md: `campos: {nombre,tipo}[]`).
@@ -128,18 +129,71 @@ fn migra_album_mic_jet3_completo() {
 /// Svelte abortaba el render dejando la interfaz en "Cargando" para siempre.
 #[test]
 fn inspeccion_serializa_campos_como_objetos() {
-    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/album-mic.mdb");
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/album-mic.mdb");
     let insp = mic_migrator::inspeccionar(&fixture).expect("inspeccionar");
     let json = serde_json::to_value(&insp).expect("serializar");
 
     let campos = json["campos"].as_array().expect("campos es arreglo");
     assert!(!campos.is_empty());
     for c in campos {
-        assert!(c.is_object(), "cada campo debe ser objeto {{nombre,tipo}}: {c}");
+        assert!(
+            c.is_object(),
+            "cada campo debe ser objeto {{nombre,tipo}}: {c}"
+        );
         assert!(c["nombre"].is_string() && c["tipo"].is_string(), "{c}");
     }
     assert_eq!(campos[0]["nombre"], "Clave");
     assert!(json["totalEstimado"].is_u64());
     assert!(json["tieneVariantes"].is_boolean());
+}
+
+/// El fixture referencia 84 imágenes (`G:\MIC\imagenes\...`) cuyos archivos no
+/// acompañan al `.mdb`: el único aviso admitido es el de imágenes faltantes.
+fn sin_mas_avisos_que_imagenes(rep: &mic_migrator::MigracionReporte) {
+    assert_eq!(rep.imagenes_faltantes.len(), 84);
+    assert_eq!(rep.advertencias.len(), 1, "{:?}", rep.advertencias);
+    assert!(
+        rep.advertencias[0].starts_with("84 imagen(es) no se encontraron"),
+        "{:?}",
+        rep.advertencias
+    );
+}
+
+/// Distribución por defecto del MIC clásico: `{MIC}\albums\x.mdb` y las fotos
+/// en `{MIC}\imagenes` (carpeta HERMANA, no dentro de `albums`). Antes la
+/// migración solo buscaba `albums\imagenes` y el álbum quedaba sin fotos.
+#[test]
+fn migra_imagenes_de_la_carpeta_hermana_de_albums() {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/album-mic.mdb");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mic = tmp.path().join("MIC");
+    let albums = mic.join("albums");
+    let imagenes = mic.join("imagenes");
+    std::fs::create_dir_all(&albums).unwrap();
+    std::fs::create_dir_all(&imagenes).unwrap();
+    std::fs::copy(&fixture, albums.join("albumgeneral.mdb")).unwrap();
+    let nombres = (1..=60)
+        .map(|i| format!("alm{i}.jpg"))
+        .chain((1000..1024).map(|v| format!("v{v}.jpg")));
+    for nombre in nombres {
+        std::fs::write(imagenes.join(nombre), b"jpg").unwrap();
+    }
+
+    let destino = tmp.path().join("nuevo").join("albumgeneral.micdb");
+    std::fs::create_dir_all(destino.parent().unwrap()).unwrap();
+    let progreso: mic_migrator::ProgresoMigracion = Box::new(|_, _, _| {});
+    let rep =
+        mic_migrator::migrar(&albums.join("albumgeneral.mdb"), &destino, progreso).expect("migrar");
+
+    assert_eq!(rep.imagenes_encontradas, 84);
+    assert!(
+        rep.imagenes_faltantes.is_empty(),
+        "{:?}",
+        rep.imagenes_faltantes
+    );
+    assert!(rep.advertencias.is_empty(), "{:?}", rep.advertencias);
+    assert!(tmp.path().join("nuevo/imagenes/alm1.jpg").is_file());
+    assert!(tmp.path().join("nuevo/imagenes/v1023.jpg").is_file());
 }
