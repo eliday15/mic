@@ -9,10 +9,10 @@
   de registros y la suma de TODOS los campos totalizables del álbum, se impriman
   o no como columna.
 
-  La hoja se imprime con window.print() del webview. Mientras la clase
-  print-sheet--imprimiendo esté presente, un bloque de estilo inyectado en el
-  head define el @page (papel/orientación dinámicos) y oculta el resto de la app
-  en @media print, sin tocar src/app.css.
+  La hoja se imprime con window.print() del webview. Mientras `imprimiendo`
+  sea true, una copia de la hoja cuelga directo de <body> (.ps-portal) y un
+  bloque de estilo inyectado en el head define el @page (papel/orientación
+  dinámicos) y oculta todo lo demás en @media print, sin tocar src/app.css.
 -->
 <script lang="ts">
   import { thumbUrl } from "$lib/ipc/thumbnails";
@@ -187,10 +187,16 @@
         : ""
     } }
 @media print {
-  body > *:not(:has(.print-sheet--imprimiendo)) { display: none !important; }
-  body:has(.print-sheet--imprimiendo) { background: #fff !important; }
+  body > *:not(.ps-portal) { display: none !important; }
+  body { background: #fff !important; }
 }`,
   );
+
+  /** Mueve el nodo a `<body>` (fuera del diálogo) mientras exista. */
+  function alBody(node: HTMLElement): { destroy: () => void } {
+    document.body.appendChild(node);
+    return { destroy: () => node.remove() };
+  }
 
   $effect(() => {
     if (!imprimiendo) return;
@@ -202,154 +208,167 @@
   });
 </script>
 
-<div
-  class="print-sheet print-sheet--{config.papel} print-sheet--{config.orientacion}"
-  class:print-sheet--imprimiendo={imprimiendo}
->
-  <header class="ps__cab">
-    <h1 class="ps__titulo">{titulo}</h1>
-    {#if config.ponFecha}
-      <span class="ps__fecha">{fechaHoy}</span>
-    {/if}
-  </header>
+<!-- La hoja se dibuja en la vista previa y, al imprimir, una copia cuelga
+     directo de <body>: dentro del diálogo, ocultar "lo que no la contiene"
+     dejaba visible la app entera y se imprimía la ventana. -->
+{#snippet hoja(enPortal: boolean)}
+  <div
+    class="print-sheet print-sheet--{config.papel} print-sheet--{config.orientacion}"
+    class:print-sheet--imprimiendo={enPortal}
+  >
+    <header class="ps__cab">
+      <h1 class="ps__titulo">{titulo}</h1>
+      {#if config.ponFecha}
+        <span class="ps__fecha">{fechaHoy}</span>
+      {/if}
+    </header>
 
-  {#if config.tipo === "ci"}
-    <!-- Catálogo con imágenes -->
-    <div class="ps__rejilla">
-      {#each registros as reg (reg.id)}
-        <div class="ps__celda" style:width={anchoColCi}>
-          <div class="ps__img-marco">
-            {#if reg.imagen}
-              <img
-                class="ps__img"
-                src={thumbUrl(
-                  albumId,
-                  tabla,
-                  reg.id,
-                  512,
-                  reg.imagenVersion ?? 0,
-                )}
-                alt=""
-              />
-            {:else}
-              <div class="ps__img-vacia"></div>
-            {/if}
+    {#if config.tipo === "ci"}
+      <!-- Catálogo con imágenes -->
+      <div class="ps__rejilla">
+        {#each registros as reg (reg.id)}
+          <div class="ps__celda" style:width={anchoColCi}>
+            <div class="ps__img-marco">
+              {#if reg.imagen}
+                <img
+                  class="ps__img"
+                  src={thumbUrl(
+                    albumId,
+                    tabla,
+                    reg.id,
+                    512,
+                    reg.imagenVersion ?? 0,
+                  )}
+                  alt=""
+                />
+              {:else}
+                <div class="ps__img-vacia"></div>
+              {/if}
+            </div>
+            <dl class="ps__datos">
+              {#each camposImpr as c (c.id)}
+                <div class="ps__dato">
+                  <dt class="ps__etq">{c.nombre}:</dt>
+                  <dd class="ps__val">{fmt(reg, c)}</dd>
+                </div>
+              {/each}
+            </dl>
           </div>
-          <dl class="ps__datos">
-            {#each camposImpr as c (c.id)}
-              <div class="ps__dato">
-                <dt class="ps__etq">{c.nombre}:</dt>
-                <dd class="ps__val">{fmt(reg, c)}</dd>
-              </div>
-            {/each}
-          </dl>
-        </div>
-      {/each}
-    </div>
-
-  {:else}
-    <!-- Tabla densa sin imágenes -->
-    <table
-      class="ps__tabla"
-      class:ps__tabla--densa={camposImpr.length > 8}
-      class:ps__tabla--muy-densa={camposImpr.length > 11}
-    >
-      <colgroup>
-        {#each camposImpr as c (c.id)}
-          <col style:width="{(pesoColumna(c) / pesoTotal) * 100}%" />
         {/each}
-      </colgroup>
-      <thead>
-        <tr>
+      </div>
+
+    {:else}
+      <!-- Tabla densa sin imágenes -->
+      <table
+        class="ps__tabla"
+        class:ps__tabla--densa={camposImpr.length > 8}
+        class:ps__tabla--muy-densa={camposImpr.length > 11}
+      >
+        <colgroup>
           {#each camposImpr as c (c.id)}
-            <th class="ps__th" class:ps__th--num={esNum(c)}>{c.nombre}</th>
+            <col style:width="{(pesoColumna(c) / pesoTotal) * 100}%" />
           {/each}
-        </tr>
-      </thead>
-      <tbody>
-        {#if config.agrupacion}
-          {#each grupos as g (g.clave)}
-            <tr class="ps__grupo">
-              <td class="ps__grupo-cab" colspan={camposImpr.length}>
-                {config.agrupacion}: {g.clave}
-                <span class="ps__grupo-conteo">({g.registros.length})</span>
-              </td>
-            </tr>
-            {#each g.registros as reg (reg.id)}
+        </colgroup>
+        <thead>
+          <tr>
+            {#each camposImpr as c (c.id)}
+              <th class="ps__th" class:ps__th--num={esNum(c)}>{c.nombre}</th>
+            {/each}
+          </tr>
+        </thead>
+        <tbody>
+          {#if config.agrupacion}
+            {#each grupos as g (g.clave)}
+              <tr class="ps__grupo">
+                <td class="ps__grupo-cab" colspan={camposImpr.length}>
+                  {config.agrupacion}: {g.clave}
+                  <span class="ps__grupo-conteo">({g.registros.length})</span>
+                </td>
+              </tr>
+              {#each g.registros as reg (reg.id)}
+                <tr>
+                  {#each camposImpr as c (c.id)}
+                    <td class="ps__td" class:ps__td--num={esNum(c)}>{fmt(reg, c)}</td>
+                  {/each}
+                </tr>
+              {/each}
+              {#if totalizables.length > 0}
+                <tr class="ps__subtotal">
+                  {#each camposImpr as c, i (c.id)}
+                    {@const tot = totalDeColumna(c)}
+                    <td
+                      class="ps__td ps__td--subtotal"
+                      class:ps__td--num={tot !== null}
+                    >
+                      {#if tot}
+                        {fmtSuma(tot, suma(g.registros, tot))}
+                      {:else if i === colEtiqueta}
+                        Subtotal
+                      {/if}
+                    </td>
+                  {/each}
+                </tr>
+              {/if}
+            {/each}
+          {:else}
+            {#each registros as reg (reg.id)}
               <tr>
                 {#each camposImpr as c (c.id)}
                   <td class="ps__td" class:ps__td--num={esNum(c)}>{fmt(reg, c)}</td>
                 {/each}
               </tr>
             {/each}
-            {#if totalizables.length > 0}
-              <tr class="ps__subtotal">
-                {#each camposImpr as c, i (c.id)}
-                  {@const tot = totalDeColumna(c)}
-                  <td
-                    class="ps__td ps__td--subtotal"
-                    class:ps__td--num={tot !== null}
-                  >
-                    {#if tot}
-                      {fmtSuma(tot, suma(g.registros, tot))}
-                    {:else if i === colEtiqueta}
-                      Subtotal
-                    {/if}
-                  </td>
-                {/each}
-              </tr>
-            {/if}
-          {/each}
-        {:else}
-          {#each registros as reg (reg.id)}
-            <tr>
-              {#each camposImpr as c (c.id)}
-                <td class="ps__td" class:ps__td--num={esNum(c)}>{fmt(reg, c)}</td>
+          {/if}
+        </tbody>
+        {#if config.ponTotales && totalizables.length > 0}
+          <tfoot>
+            <tr class="ps__total-grl">
+              {#each camposImpr as c, i (c.id)}
+                {@const tot = totalDeColumna(c)}
+                <td class="ps__td ps__td--total" class:ps__td--num={tot !== null}>
+                  {#if tot}
+                    {fmtSuma(tot, suma(registros, tot))}
+                  {:else if i === colEtiqueta}
+                    {t.reportes.total}
+                  {/if}
+                </td>
               {/each}
             </tr>
-          {/each}
+          </tfoot>
         {/if}
-      </tbody>
-      {#if config.ponTotales && totalizables.length > 0}
-        <tfoot>
-          <tr class="ps__total-grl">
-            {#each camposImpr as c, i (c.id)}
-              {@const tot = totalDeColumna(c)}
-              <td class="ps__td ps__td--total" class:ps__td--num={tot !== null}>
-                {#if tot}
-                  {fmtSuma(tot, suma(registros, tot))}
-                {:else if i === colEtiqueta}
-                  {t.reportes.total}
-                {/if}
-              </td>
-            {/each}
-          </tr>
-        </tfoot>
-      {/if}
-    </table>
-  {/if}
+      </table>
+    {/if}
 
-  {#if config.ponTotales}
-    <section class="ps__totales" aria-label={t.reportes.totales}>
-      <h2 class="ps__totales-titulo">{t.reportes.totales}</h2>
-      <dl class="ps__totales-lista">
-        <div class="ps__total">
-          <dt>{t.reportes.totalRegistros}</dt>
-          <dd>{formatearEntero(registros.length)}</dd>
-        </div>
-        {#each totalizablesAlbum as c (c.id)}
+    {#if config.ponTotales}
+      <section class="ps__totales" aria-label={t.reportes.totales}>
+        <h2 class="ps__totales-titulo">{t.reportes.totales}</h2>
+        <dl class="ps__totales-lista">
           <div class="ps__total">
-            <dt>{c.nombre}</dt>
-            <dd>{fmtSuma(c, suma(registros, c))}</dd>
+            <dt>{t.reportes.totalRegistros}</dt>
+            <dd>{formatearEntero(registros.length)}</dd>
           </div>
-        {/each}
-      </dl>
-      {#if totalizablesAlbum.length === 0}
-        <p class="ps__totales-nota">{t.reportes.sinTotalizables}</p>
-      {/if}
-    </section>
-  {/if}
-</div>
+          {#each totalizablesAlbum as c (c.id)}
+            <div class="ps__total">
+              <dt>{c.nombre}</dt>
+              <dd>{fmtSuma(c, suma(registros, c))}</dd>
+            </div>
+          {/each}
+        </dl>
+        {#if totalizablesAlbum.length === 0}
+          <p class="ps__totales-nota">{t.reportes.sinTotalizables}</p>
+        {/if}
+      </section>
+    {/if}
+  </div>
+{/snippet}
+
+{@render hoja(false)}
+
+{#if imprimiendo}
+  <div class="ps-portal" use:alBody>
+    {@render hoja(true)}
+  </div>
+{/if}
 
 <style>
   /* Hoja en pantalla (vista previa): aspecto de papel con sombra suave. */
@@ -576,8 +595,16 @@
     break-inside: avoid;
   }
 
+  /* La copia para imprimir no se ve en pantalla; solo en la impresión. */
+  .ps-portal {
+    display: none;
+  }
+
   /* En impresión, la hoja ocupa la página completa sin sombra ni márgenes. */
   @media print {
+    .ps-portal {
+      display: block;
+    }
     .print-sheet {
       box-shadow: none;
       margin: 0;

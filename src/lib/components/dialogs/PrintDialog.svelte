@@ -6,6 +6,7 @@
   que se imprime (aunque no se guarde como reporte) se recuerda por álbum.
 -->
 <script lang="ts">
+  import { tick } from "svelte";
   import { Eye, Printer, Save, Trash2 } from "lucide-svelte";
   import { Modal, Button, Select, TextInput, FieldPicker } from "$lib/components/ui";
   import PrintSheet from "$lib/components/print/PrintSheet.svelte";
@@ -194,7 +195,11 @@
     }
     recordarConfig();
     imprimiendo = true;
-    // Espera a que el DOM aplique la clase de impresión antes de print().
+    // Espera a que exista la copia para imprimir y a que carguen sus imágenes;
+    // si no, la impresión sale con huecos en vez de fotos.
+    await tick();
+    const imagenes = document.querySelectorAll<HTMLImageElement>(".ps-portal img");
+    await Promise.all([...imagenes].map((img) => img.decode().catch(() => undefined)));
     await new Promise((r) => requestAnimationFrame(() => r(null)));
     window.print();
     imprimiendo = false;
